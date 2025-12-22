@@ -1,0 +1,173 @@
+/**
+ * Rotas de WhatsApp
+ * 
+ * Define rotas para envio e recebimento de mensagens via WhatsApp.
+ * 
+ * Endpoints:
+ * - POST /api/whatsapp/send - Enviar mensagem
+ * - POST /api/whatsapp/webhook - Webhook para receber mensagens
+ */
+
+const express = require("express");
+const router = express.Router();
+const whatsappService = require("../services/whatsapp");
+const witService = require("../services/wit");
+const db = require("../config/database");
+const fcmService = require("../services/fcm");
+
+/**
+ * POST /api/whatsapp/send
+ * Envia uma mensagem via WhatsApp
+ */
+router.post("/send", async (req, res) => {
+  try {
+    const { phone, message } = req.body;
+
+    // Validação
+    if (!phone || !message) {
+      return res.status(400).json({
+        error: {
+          message: "Telefone e mensagem são obrigatórios",
+          status: 400,
+        },
+      });
+    }
+
+    // Enviar mensagem
+    const result = await whatsappService.sendWhatsAppMessage(phone, message);
+
+    res.json({
+      success: true,
+      message: "Mensagem enviada com sucesso",
+      data: result,
+    });
+  } catch (error) {
+    console.error("❌ Erro ao enviar mensagem WhatsApp:", error);
+    res.status(500).json({
+      error: {
+        message: error.message || "Erro ao enviar mensagem",
+        status: 500,
+      },
+    });
+  }
+});
+
+/**
+ * POST /api/whatsapp/webhook
+ * Webhook para receber mensagens do WhatsApp
+ * 
+ * Fluxo:
+ * 1. Recebe mensagem do WhatsApp
+ * 2. Processa mensagem usando Wit.ai
+ * 3. Interpreta comando (criar tarefa, listar tarefas, etc)
+ * 4. Executa ação correspondente
+ * 5. Envia resposta via WhatsApp
+ * 6. Envia notificação FCM se necessário
+ */
+router.post("/webhook", async (req, res) => {
+  try {
+    // Processar mensagem recebida
+    const messageData = whatsappService.processReceivedMessage(req.body);
+    const { phone, message } = messageData;
+
+    console.log(`📱 Mensagem recebida de ${phone}: ${message}`);
+
+    // Interpretar mensagem usando Wit.ai
+    let intent = null;
+    let entities = {};
+
+    try {
+      const witResult = await witService.interpretText(message);
+      intent = witResult.intent;
+      entities = witResult.entities || {};
+    } catch (error) {
+      console.warn("⚠️ Erro ao interpretar com Wit.ai:", error);
+      // Continuar mesmo se Wit.ai falhar
+    }
+
+    // Processar comando baseado no intent
+    let responseMessage = "";
+    let taskCreated = null;
+
+    switch (intent) {
+      case "create_task":
+      case "add_task":
+        // Criar nova tarefa
+        const title = entities.title || entities.task_name || message;
+        const description = entities.description || null;
+        const status = entities.status || "pending";
+
+        taskCreated = db.createTask({
+          title: typeof title === "string" ? title : title[0],
+          description: description ? (typeof description === "string" ? description : description[0]) : null,
+          status: typeof status === "string" ? status : status[0],
+        });
+
+        responseMessage = `✅ Tarefa criada: "${taskCreated.title}"`;
+        
+        // Enviar notificação FCM
+        try {
+          await fcmService.sendNotification({
+            title: "Nova tarefa via WhatsApp",
+            body: `Tarefa "${taskCreated.title}" foi criada`,
+            data: { taskId: taskCreated.id },
+          });
+        } catch (error) {
+          console.warn("⚠️ Erro ao enviar notificação FCM:", error);
+        }
+        break;
+
+      case "list_tasks":
+      case "show_tasks":
+        // Listar tarefas
+        const tasks = db.getAllTasks();
+        const pendingTasks = tasks.filter((t) => t.status === "pending");
+        
+        if (pendingTasks.length === 0) {
+          responseMessage = "📋 Você não tem tarefas pendentes.";
+        } else {
+          responseMessage = `📋 Você tem ${pendingTasks.length} tarefa(s) pendente(s):\n\n`;
+          pendingTasks.slice(0, 5).forEach((task, index) => {
+            responseMessage += `${index + 1}. ${task.title}\n`;
+          });
+          if (pendingTasks.length > 5) {
+            responseMessage += `\n... e mais ${pendingTasks.length - 5} tarefa(s)`;
+          }
+        }
+        break;
+
+      default:
+        // Comando não reconhecido
+        responseMessage = `Olá! Eu sou o TodoWhats bot. Você pode:\n\n` +
+          `• Criar tarefa: "Criar tarefa comprar leite"\n` +
+          `• Listar tarefas: "Mostrar minhas tarefas"\n\n` +
+          `Sua mensagem: "${message}"`;
+    }
+
+    // Enviar resposta via WhatsApp
+    try {
+      await whatsappService.sendWhatsAppMessage(phone, responseMessage);
+    } catch (error) {
+      console.error("❌ Erro ao enviar resposta:", error);
+    }
+
+    // Responder ao webhook
+    res.json({
+      success: true,
+      message: "Webhook processado com sucesso",
+      intent,
+      taskCreated: taskCreated ? taskCreated.id : null,
+    });
+  } catch (error) {
+    console.error("❌ Erro ao processar webhook:", error);
+    res.status(500).json({
+      error: {
+        message: "Erro ao processar webhook",
+        status: 500,
+      },
+    });
+  }
+});
+
+module.exports = router;
+

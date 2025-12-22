@@ -1,0 +1,6 @@
+API de URL:
+https://api.ultramsg.com/instance156405/
+
+ID da instância: instance156405
+
+TOKEN: xbjjhl754htetoqs

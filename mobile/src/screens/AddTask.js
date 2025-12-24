@@ -42,6 +42,7 @@ export default function AddTaskScreen({ navigation }) {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [dateInput, setDateInput] = useState("");
   const [timeInput, setTimeInput] = useState("");
+  const [modalOpenTime, setModalOpenTime] = useState(null);
 
   /**
    * Formata o input de data enquanto o usuário digita (DD/MM/YYYY)
@@ -121,7 +122,9 @@ export default function AddTaskScreen({ navigation }) {
       parseInt(month) - 1,
       parseInt(day),
       parseInt(hour),
-      parseInt(minute)
+      parseInt(minute),
+      0, // segundos
+      0  // milissegundos
     );
 
     if (isNaN(newDate.getTime())) {
@@ -129,8 +132,29 @@ export default function AddTaskScreen({ navigation }) {
       return;
     }
 
-    if (newDate <= new Date()) {
-      Alert.alert("Erro", "A data/hora deve ser no futuro.");
+    // Usar o horário de quando o modal foi aberto, não o horário atual
+    // Isso evita que o tempo decorrido entre abrir e confirmar cause erro
+    const referenceTime = modalOpenTime || new Date();
+    const referenceNormalized = new Date(
+      referenceTime.getFullYear(),
+      referenceTime.getMonth(),
+      referenceTime.getDate(),
+      referenceTime.getHours(),
+      referenceTime.getMinutes(),
+      0,
+      0
+    );
+
+    // Comparar: deve ser maior que o minuto de referência
+    // Se são 19:00 (qualquer segundo), permite agendar para 19:01 ou mais
+    // Se são 19:00:30, ainda permite agendar para 19:01 ou mais
+    // Adicionar 1 minuto ao minuto de referência para garantir que seja pelo menos o próximo minuto
+    const nextMinute = new Date(referenceNormalized);
+    nextMinute.setMinutes(nextMinute.getMinutes() + 1);
+    
+    // Se a data agendada for menor que o próximo minuto, dar erro
+    if (newDate < nextMinute) {
+      Alert.alert("Erro", "A data/hora deve ser no futuro (pelo menos 1 minuto a partir de agora).");
       return;
     }
 
@@ -164,8 +188,32 @@ export default function AddTaskScreen({ navigation }) {
     // Validar data agendada se habilitada
     if (enableScheduling) {
       const now = new Date();
-      if (scheduledAt <= now) {
-        Alert.alert("Erro", "A data/hora agendada deve ser no futuro.");
+      // Normalizar para comparar apenas até os minutos
+      const nowNormalized = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        now.getHours(),
+        now.getMinutes(),
+        0,
+        0
+      );
+      const scheduledNormalized = new Date(
+        scheduledAt.getFullYear(),
+        scheduledAt.getMonth(),
+        scheduledAt.getDate(),
+        scheduledAt.getHours(),
+        scheduledAt.getMinutes(),
+        0,
+        0
+      );
+      
+      // Comparar: deve ser pelo menos 1 minuto no futuro
+      const nextMinute = new Date(nowNormalized);
+      nextMinute.setMinutes(nextMinute.getMinutes() + 1);
+      
+      if (scheduledNormalized < nextMinute) {
+        Alert.alert("Erro", "A data/hora agendada deve ser no futuro (pelo menos 1 minuto a partir de agora).");
         return;
       }
     }
@@ -305,6 +353,9 @@ export default function AddTaskScreen({ navigation }) {
               <TouchableOpacity
                 style={styles.dateTimeButton}
                 onPress={() => {
+                  // Capturar o horário atual quando o modal abre (para validação)
+                  setModalOpenTime(new Date());
+                  
                   // Inicializar inputs com valores atuais formatados
                   const now = new Date();
                   const tomorrow = new Date(now);

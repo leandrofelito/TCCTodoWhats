@@ -232,6 +232,9 @@ export const createTask = async (taskData) => {
 
   // Inserir a nova tarefa usando a nova API assíncrona
   // CORREÇÃO: Garantir que os valores no array nunca sejam undefined/null/vazios
+  // Declarar insertValues fora do try para que esteja disponível no catch
+  let insertValues = null;
+  
   try {
     // Validação final ANTES de criar o array
     if (!createdAt || createdAt === null || createdAt === undefined || createdAt === '') {
@@ -241,7 +244,7 @@ export const createTask = async (taskData) => {
       throw new Error(`updatedAt inválido no momento do INSERT: ${updatedAt} (tipo: ${typeof updatedAt})`);
     }
 
-    const insertValues = [
+    insertValues = [
       id,
       taskData.title.trim(),
       taskData.description ? taskData.description.trim() : null,
@@ -278,7 +281,26 @@ export const createTask = async (taskData) => {
     console.log("✅ Tarefa inserida com sucesso:", id);
   } catch (error) {
     // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/900d3e87-1857-467b-b71f-e58429934408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'tasks.js:218',message:'INSERT ERROR',data:{errorMessage:error.message,errorCode:error.code,insertValues,createdAtValue:insertValues[4],updatedAtValue:insertValues[5],createdAtType:typeof insertValues[4],updatedAtType:typeof insertValues[5],createdAtIsNull:insertValues[4]===null,updatedAtIsNull:insertValues[5]===null},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+    // Verificar se insertValues existe antes de usar no log
+    const errorData = {
+      errorMessage: error.message,
+      errorCode: error.code,
+    };
+    
+    if (insertValues) {
+      errorData.insertValues = insertValues;
+      errorData.createdAtValue = insertValues[4];
+      errorData.updatedAtValue = insertValues[5];
+      errorData.createdAtType = typeof insertValues[4];
+      errorData.updatedAtType = typeof insertValues[5];
+      errorData.createdAtIsNull = insertValues[4] === null;
+      errorData.updatedAtIsNull = insertValues[5] === null;
+    } else {
+      errorData.insertValues = null;
+      errorData.errorBeforeArrayCreation = true;
+    }
+    
+    fetch('http://127.0.0.1:7242/ingest/900d3e87-1857-467b-b71f-e58429934408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'tasks.js:218',message:'INSERT ERROR',data:errorData,timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
     // #endregion
 
     console.error("❌ Erro ao inserir tarefa:", error);
@@ -296,7 +318,7 @@ export const createTask = async (taskData) => {
       errorMessage: error.message,
       errorCode: error.code,
       errorStack: error.stack,
-      insertValuesArray: insertValues,
+      insertValuesArray: insertValues || null,
     });
     throw error;
   }

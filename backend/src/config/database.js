@@ -123,6 +123,7 @@ const createTask = (taskData) => {
     title: taskData.title,
     description: taskData.description || null,
     status: taskData.status || "pending",
+    scheduled_at: taskData.scheduled_at || null,
     created_at: now,
     updated_at: now,
   };

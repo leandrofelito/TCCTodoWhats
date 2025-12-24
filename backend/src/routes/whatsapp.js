@@ -14,6 +14,7 @@ const whatsappService = require("../services/whatsapp");
 const witService = require("../services/wit");
 const db = require("../config/database");
 const fcmService = require("../services/fcm");
+const { extractDateTime } = require("../utils/dateParser");
 
 /**
  * POST /api/whatsapp/send
@@ -96,24 +97,44 @@ router.post("/webhook", async (req, res) => {
         const title = entities.title || entities.task_name || message;
         const description = entities.description || null;
         const status = entities.status || "pending";
+        
+        // Extrair data/hora agendada da mensagem
+        const scheduledAt = extractDateTime(message, entities);
 
         taskCreated = db.createTask({
           title: typeof title === "string" ? title : title[0],
           description: description ? (typeof description === "string" ? description : description[0]) : null,
           status: typeof status === "string" ? status : status[0],
+          scheduled_at: scheduledAt,
         });
 
-        responseMessage = `✅ Tarefa criada: "${taskCreated.title}"`;
-        
-        // Enviar notificação FCM
-        try {
-          await fcmService.sendNotification({
-            title: "Nova tarefa via WhatsApp",
-            body: `Tarefa "${taskCreated.title}" foi criada`,
-            data: { taskId: taskCreated.id },
+        // Montar mensagem de resposta
+        if (scheduledAt) {
+          const scheduledDate = new Date(scheduledAt);
+          const formattedDate = scheduledDate.toLocaleString("pt-BR", {
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
           });
-        } catch (error) {
-          console.warn("⚠️ Erro ao enviar notificação FCM:", error);
+          responseMessage = `✅ Tarefa criada: "${taskCreated.title}"\n📅 Agendada para: ${formattedDate}`;
+        } else {
+          responseMessage = `✅ Tarefa criada: "${taskCreated.title}"`;
+        }
+        
+        // Não enviar notificação FCM imediata se tiver agendamento
+        // A notificação será enviada pelo app mobile no horário agendado
+        if (!scheduledAt) {
+          try {
+            await fcmService.sendNotification({
+              title: "Nova tarefa via WhatsApp",
+              body: `Tarefa "${taskCreated.title}" foi criada`,
+              data: { taskId: taskCreated.id },
+            });
+          } catch (error) {
+            console.warn("⚠️ Erro ao enviar notificação FCM:", error);
+          }
         }
         break;
 

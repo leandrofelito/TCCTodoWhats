@@ -128,6 +128,69 @@ export const cancelAllNotifications = async () => {
 };
 
 /**
+ * Agenda uma notificação para uma tarefa agendada
+ * 
+ * @param {string} taskId - ID da tarefa
+ * @param {string} scheduledAt - Data/hora agendada (ISO 8601)
+ * @param {string} title - Título da tarefa
+ * @returns {Promise<string>} ID da notificação agendada
+ */
+export const scheduleTaskNotification = async (taskId, scheduledAt, title) => {
+  try {
+    const scheduledDate = new Date(scheduledAt);
+    const now = new Date();
+
+    // Validar que a data é futura
+    if (scheduledDate <= now) {
+      console.warn("⚠️ Data agendada está no passado, não agendando notificação");
+      return null;
+    }
+
+    // Usar o ID da tarefa como identificador único da notificação
+    // Isso permite cancelar notificações específicas
+    const notificationId = `task_${taskId}`;
+
+    const notificationIdResult = await Notifications.scheduleNotificationAsync({
+      identifier: notificationId,
+      content: {
+        title: "📅 Tarefa Agendada",
+        body: `É hora de: ${title}`,
+        data: {
+          taskId,
+          type: "scheduled_task",
+        },
+        sound: true,
+        priority: Notifications.AndroidNotificationPriority.HIGH,
+      },
+      trigger: scheduledDate,
+    });
+
+    console.log(`✅ Notificação agendada para tarefa ${taskId} em ${scheduledDate.toLocaleString("pt-BR")}`);
+    return notificationIdResult;
+  } catch (error) {
+    console.error("❌ Erro ao agendar notificação:", error);
+    throw error;
+  }
+};
+
+/**
+ * Cancela a notificação de uma tarefa específica
+ * 
+ * @param {string} taskId - ID da tarefa
+ * @returns {Promise<void>}
+ */
+export const cancelTaskNotification = async (taskId) => {
+  try {
+    const notificationId = `task_${taskId}`;
+    await Notifications.cancelScheduledNotificationAsync(notificationId);
+    console.log(`✅ Notificação cancelada para tarefa ${taskId}`);
+  } catch (error) {
+    console.warn("⚠️ Erro ao cancelar notificação:", error);
+    // Não falhar se a notificação não existir
+  }
+};
+
+/**
  * Obtém o token FCM atual
  * 
  * @returns {Promise<string|null>} Token FCM ou null

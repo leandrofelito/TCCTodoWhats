@@ -17,18 +17,21 @@
  */
 
 import { getAllTasks, getUnsyncedTasks, markTasksAsSynced, createTask, updateTask } from "../database/tasks";
+import { initDatabase } from "../database/db";
 import { tasksAPI } from "./api";
 import { SYNC_CONFIG } from "../utils/constants";
+import { scheduleTaskNotification } from "./fcm";
 
 /**
  * Sincroniza tarefas locais com o servidor
  * 
  * Fluxo:
- * 1. Busca tarefas não sincronizadas localmente
- * 2. Envia para o servidor
- * 3. Marca como sincronizadas localmente
- * 4. Baixa tarefas do servidor
- * 5. Atualiza/insere tarefas locais
+ * 1. Garantir que o banco de dados está inicializado
+ * 2. Busca tarefas não sincronizadas localmente
+ * 3. Envia para o servidor
+ * 4. Marca como sincronizadas localmente
+ * 5. Baixa tarefas do servidor
+ * 6. Atualiza/insere tarefas locais
  * 
  * @returns {Promise<Object>} Resultado da sincronização
  */
@@ -39,6 +42,11 @@ export const syncTasks = async () => {
 
   try {
     console.log("🔄 Iniciando sincronização...");
+
+    // 0. Garantir que o banco de dados está inicializado antes de acessar a tabela
+    // Isso previne o erro "no such table: tasks" quando a sincronização
+    // é chamada antes da inicialização do banco estar completa
+    await initDatabase();
 
     // 1. Buscar tarefas não sincronizadas localmente
     const unsyncedTasks = await getUnsyncedTasks();
@@ -251,15 +259,25 @@ const syncServerTasksToLocal = async (serverTasks) => {
         continue;
       }
 
-      await createTask({
+      const newTask = await createTask({
         title: serverTask.title,
         description: serverTask.description,
         status: serverTask.status,
+        scheduled_at: serverTask.scheduled_at || null,
         created_at: createdAt,
         updated_at: updatedAt,
         server_id: serverTask.id,
         synced: 1, // Já vem do servidor, então já está sincronizada
       });
+
+      // Agendar notificação se a tarefa tiver scheduled_at
+      if (newTask && newTask.scheduled_at) {
+        try {
+          await scheduleTaskNotification(newTask.id, newTask.scheduled_at, newTask.title);
+        } catch (error) {
+          console.warn("⚠️ Erro ao agendar notificação após sincronização:", error);
+        }
+      }
     } else {
       // Tarefa existe, verificar qual é mais recente
       const serverUpdated = serverTask.updated_at ? new Date(serverTask.updated_at) : new Date(0);
@@ -268,14 +286,18 @@ const syncServerTasksToLocal = async (serverTasks) => {
       if (serverUpdated > localUpdated) {
         // Servidor tem versão mais recente, atualizar local
         // Preservar created_at local (não deve mudar)
-        await updateTask(localTask.id, {
+        const updatedTask = await updateTask(localTask.id, {
           title: serverTask.title,
           description: serverTask.description,
           status: serverTask.status,
+          scheduled_at: serverTask.scheduled_at || null,
           server_id: serverTask.id,
           synced: 1,
           // updated_at será atualizado automaticamente pelo updateTask
         });
+
+        // Notificação será agendada/cancelada automaticamente pelo updateTask
+        // que já verifica mudanças em scheduled_at
       } else if (localUpdated > serverUpdated && !localTask.synced) {
         // Local tem versão mais recente e não foi sincronizada
         // Manter local e enviar na próxima sincronização

@@ -37,6 +37,14 @@ const DB_NAME = "todowhats.db";
 let dbPromise = null;
 
 /**
+ * Promessa da inicialização do banco de dados.
+ * Usamos uma Promise para garantir que a inicialização (criação de tabelas, migrações)
+ * aconteça apenas uma vez, mesmo se múltiplas chamadas simultâneas ocorrerem.
+ * Isso previne condições de corrida onde múltiplas chamadas tentam criar a mesma tabela.
+ */
+let initPromise = null;
+
+/**
  * Obtém ou cria a instância do banco de dados (API nova, assíncrona).
  *
  * @returns {Promise<SQLite.SQLiteDatabase>} Instância do banco de dados
@@ -52,105 +60,182 @@ export const getDatabase = async () => {
 /**
  * Inicializa o banco de dados
  * Cria as tabelas necessárias se não existirem, usando a nova API.
+ * 
+ * Mecanismo de Lock:
+ * - Se já existe uma inicialização em andamento, retorna a mesma Promise
+ * - Isso garante que apenas uma inicialização aconteça por vez
+ * - Previne erros de "table already exists" em chamadas simultâneas
  *
  * @returns {Promise<void>}
  */
 export const initDatabase = async () => {
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/900d3e87-1857-467b-b71f-e58429934408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'db.js:58',message:'initDatabase ENTRY',data:{timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
-  // #endregion
+  // Se já existe uma inicialização em andamento, retornar a mesma Promise
+  // Isso previne múltiplas execuções simultâneas (condição de corrida)
+  if (initPromise) {
+    return initPromise;
+  }
 
-  try {
-    const db = await getDatabase();
-    
+  // Criar nova Promise de inicialização
+  initPromise = (async () => {
     // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/900d3e87-1857-467b-b71f-e58429934408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'db.js:61',message:'Database connection obtained',data:{timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+    fetch('http://127.0.0.1:7242/ingest/900d3e87-1857-467b-b71f-e58429934408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'db.js:58',message:'initDatabase ENTRY',data:{timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
     // #endregion
 
-    /**
-     * IMPORTANTE - ORDEM DA INICIALIZAÇÃO
-     *
-     * 1. Verificar se a tabela existe e qual schema ela tem.
-     * 2. Se não existe, criar com schema correto (snake_case).
-     * 3. Se existe, verificar se precisa migrar (camelCase -> snake_case).
-     * 4. Executar migração se necessário.
-     * 5. Garantir que todas as colunas necessárias existam.
-     * 6. Criar índices apenas depois da migração.
-     *
-     * Isso permite que usuários com banco já criado em versões antigas
-     * continuem usando o app sem precisar limpar dados manualmente.
-     */
+    try {
+      const db = await getDatabase();
+      
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/900d3e87-1857-467b-b71f-e58429934408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'db.js:61',message:'Database connection obtained',data:{timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
+      // #endregion
 
-    // 1) Verificar se a tabela existe
-    const tableExists = await db.getAllAsync(`
-      SELECT name FROM sqlite_master 
-      WHERE type='table' AND name='tasks';
-    `);
-    
-    const hasTable = tableExists && tableExists.length > 0;
-    
-    if (!hasTable) {
-      // Tabela não existe, criar com schema correto
-      console.log("📋 Criando tabela tasks com schema correto...");
+      /**
+       * IMPORTANTE - ORDEM DA INICIALIZAÇÃO
+       *
+       * 1. Verificar se a tabela existe e qual schema ela tem.
+       * 2. Se não existe, criar com schema correto (snake_case).
+       * 3. Se existe, verificar se precisa migrar (camelCase -> snake_case).
+       * 4. Executar migração se necessário.
+       * 5. Garantir que todas as colunas necessárias existam.
+       * 6. Criar índices apenas depois da migração.
+       *
+       * Isso permite que usuários com banco já criado em versões antigas
+       * continuem usando o app sem precisar limpar dados manualmente.
+       */
+
+      // 1) Verificar se a tabela existe
+      const tableExists = await db.getAllAsync(`
+        SELECT name FROM sqlite_master 
+        WHERE type='table' AND name='tasks';
+      `);
+      
+      const hasTable = tableExists && tableExists.length > 0;
+      
+      if (!hasTable) {
+        // Tabela não existe, criar com schema correto
+        console.log("📋 Criando tabela tasks com schema correto...");
+        try {
+          await db.execAsync(
+            `
+            CREATE TABLE tasks (
+              id TEXT PRIMARY KEY,
+              title TEXT NOT NULL,
+              description TEXT,
+              status TEXT NOT NULL DEFAULT 'pending',
+              scheduled_at TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              synced INTEGER NOT NULL DEFAULT 0,
+              server_id TEXT
+            );
+            `
+          );
+          console.log("✅ Tabela tasks criada com sucesso");
+        } catch (createError) {
+          // Se der erro de "table already exists", verificar novamente
+          // Isso pode acontecer em condições de corrida raras
+          if (createError.message && createError.message.includes("table tasks already exists")) {
+            console.log("⚠️ Tabela tasks já existe (criada por outra chamada simultânea), continuando...");
+            // Verificar novamente se a tabela existe
+            const tableExistsRetry = await db.getAllAsync(`
+              SELECT name FROM sqlite_master 
+              WHERE type='table' AND name='tasks';
+            `);
+            if (!tableExistsRetry || tableExistsRetry.length === 0) {
+              // Tabela realmente não existe, re-lançar erro
+              throw createError;
+            }
+          } else {
+            // Outro tipo de erro, re-lançar
+            throw createError;
+          }
+        }
+      } else {
+        // Tabela existe, verificar schema e migrar se necessário
+        console.log("🔍 Tabela tasks já existe, verificando schema...");
+      }
+
+      // 2) Migrar bancos antigos, adicionando colunas que não existirem
+      // Esta função também trata a migração de camelCase para snake_case
+      await migrateTasksTable(db);
+
+      // VERIFICAÇÃO FINAL CRÍTICA: Garantir que não há colunas camelCase após migração
+      const finalSchemaCheck = await db.getAllAsync(`PRAGMA table_info(tasks);`);
+      const finalColumnNames = finalSchemaCheck.map(col => col.name);
+      const finalHasCamelCase = finalColumnNames.includes("createdAt") || finalColumnNames.includes("updatedAt");
+      
+      if (finalHasCamelCase) {
+        console.error("🚨 ERRO CRÍTICO: Schema ainda possui colunas camelCase após migração!");
+        console.error("📋 Colunas finais:", finalColumnNames);
+        throw new Error(`Migração falhou: Schema ainda possui colunas camelCase (${finalColumnNames.filter(c => c === "createdAt" || c === "updatedAt").join(", ")})`);
+      }
+      
+      console.log("✅ Verificação final: Schema correto (apenas snake_case)");
+      console.log("📋 Colunas finais:", finalColumnNames);
+
+      // 3) Criar índices somente após garantir que as colunas existem
       await db.execAsync(
         `
-        CREATE TABLE tasks (
-          id TEXT PRIMARY KEY,
-          title TEXT NOT NULL,
-          description TEXT,
-          status TEXT NOT NULL DEFAULT 'pending',
-          created_at TEXT NOT NULL,
-          updated_at TEXT NOT NULL,
-          synced INTEGER NOT NULL DEFAULT 0,
-          server_id TEXT
-        );
+        CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+        CREATE INDEX IF NOT EXISTS idx_tasks_synced ON tasks(synced);
         `
       );
-      console.log("✅ Tabela tasks criada com sucesso");
-    } else {
-      // Tabela existe, verificar schema e migrar se necessário
-      console.log("🔍 Tabela tasks já existe, verificando schema...");
+
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/900d3e87-1857-467b-b71f-e58429934408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'db.js:119',message:'initDatabase SUCCESS',data:{finalColumns:finalColumnNames,hasCamelCase:finalHasCamelCase},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+
+      console.log("✅ Banco de dados inicializado com sucesso (nova API SQLite + migração)");
+    } catch (error) {
+      // #region agent log
+      fetch('http://127.0.0.1:7242/ingest/900d3e87-1857-467b-b71f-e58429934408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'db.js:121',message:'initDatabase ERROR',data:{errorMessage:error.message,errorStack:error.stack},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
+
+      // Verificar se é erro de "table already exists" e tratar como sucesso
+      // Isso pode acontecer em condições de corrida raras onde a tabela foi criada
+      // por outra chamada simultânea antes desta verificar
+      if (error.message && error.message.includes("table tasks already exists")) {
+        console.log("⚠️ Tabela tasks já existe (provavelmente criada por outra chamada simultânea), continuando...");
+        
+        // Verificar se a tabela realmente existe e está acessível
+        try {
+          const db = await getDatabase();
+          const tableExists = await db.getAllAsync(`
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name='tasks';
+          `);
+          
+          if (tableExists && tableExists.length > 0) {
+            // Tabela existe, executar migração normalmente
+            await migrateTasksTable(db);
+            console.log("✅ Banco de dados inicializado com sucesso (tabela já existia)");
+            return;
+          }
+        } catch (checkError) {
+          // Se não conseguir verificar, re-lançar o erro original
+          console.error("❌ Erro ao verificar tabela após erro de criação:", checkError);
+        }
+      }
+      
+      console.error("❌ Erro na inicialização do banco de dados:", error);
+      throw error;
     }
+  })();
 
-    // 2) Migrar bancos antigos, adicionando colunas que não existirem
-    // Esta função também trata a migração de camelCase para snake_case
-    await migrateTasksTable(db);
-
-    // VERIFICAÇÃO FINAL CRÍTICA: Garantir que não há colunas camelCase após migração
-    const finalSchemaCheck = await db.getAllAsync(`PRAGMA table_info(tasks);`);
-    const finalColumnNames = finalSchemaCheck.map(col => col.name);
-    const finalHasCamelCase = finalColumnNames.includes("createdAt") || finalColumnNames.includes("updatedAt");
-    
-    if (finalHasCamelCase) {
-      console.error("🚨 ERRO CRÍTICO: Schema ainda possui colunas camelCase após migração!");
-      console.error("📋 Colunas finais:", finalColumnNames);
-      throw new Error(`Migração falhou: Schema ainda possui colunas camelCase (${finalColumnNames.filter(c => c === "createdAt" || c === "updatedAt").join(", ")})`);
-    }
-    
-    console.log("✅ Verificação final: Schema correto (apenas snake_case)");
-    console.log("📋 Colunas finais:", finalColumnNames);
-
-    // 3) Criar índices somente após garantir que as colunas existem
-    await db.execAsync(
-      `
-      CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-      CREATE INDEX IF NOT EXISTS idx_tasks_synced ON tasks(synced);
-      `
-    );
-
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/900d3e87-1857-467b-b71f-e58429934408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'db.js:119',message:'initDatabase SUCCESS',data:{finalColumns:finalColumnNames,hasCamelCase:finalHasCamelCase},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
-
-    console.log("✅ Banco de dados inicializado com sucesso (nova API SQLite + migração)");
+  // Aguardar a conclusão da inicialização e retornar a Promise
+  // Se houver erro, limpar a Promise para permitir nova tentativa
+  try {
+    await initPromise;
   } catch (error) {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/900d3e87-1857-467b-b71f-e58429934408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'db.js:121',message:'initDatabase ERROR',data:{errorMessage:error.message,errorStack:error.stack},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'A'})}).catch(()=>{});
-    // #endregion
-
-    console.error("❌ Erro na inicialização do banco de dados:", error);
+    // Em caso de erro, limpar a Promise para permitir nova tentativa
+    initPromise = null;
     throw error;
   }
+  
+  // Limpar a Promise após sucesso para permitir reinicialização se necessário
+  // (embora normalmente não seja necessário, é mais seguro)
+  initPromise = null;
+  
+  return;
 };
 
 /**
@@ -256,6 +341,7 @@ const migrateTasksTable = async (db) => {
             title TEXT NOT NULL,
             description TEXT,
             status TEXT NOT NULL DEFAULT 'pending',
+            scheduled_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             synced INTEGER NOT NULL DEFAULT 0,
@@ -269,13 +355,14 @@ const migrateTasksTable = async (db) => {
           const updatedAt = task.updated_at || task.updatedAt || currentTimestamp;
           
           await db.runAsync(`
-            INSERT INTO tasks (id, title, description, status, created_at, updated_at, synced, server_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            INSERT INTO tasks (id, title, description, status, scheduled_at, created_at, updated_at, synced, server_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
           `, [
             task.id,
             task.title,
             task.description || null,
             task.status || 'pending',
+            task.scheduled_at || null,
             createdAt,
             updatedAt,
             task.synced !== undefined ? task.synced : 0,
@@ -291,6 +378,7 @@ const migrateTasksTable = async (db) => {
             title TEXT NOT NULL,
             description TEXT,
             status TEXT NOT NULL DEFAULT 'pending',
+            scheduled_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             synced INTEGER NOT NULL DEFAULT 0,
@@ -316,6 +404,9 @@ const migrateTasksTable = async (db) => {
 
     // Garantir coluna `status` (usada para filtros e índices)
     await ensureColumn("status", "status TEXT NOT NULL DEFAULT 'pending'");
+
+    // Garantir coluna `scheduled_at` (data/hora agendada para notificação)
+    await ensureColumn("scheduled_at", "scheduled_at TEXT");
 
     // Verificar novamente após garantir outras colunas (pode ter mudado)
     const finalColumnsCheck = await db.getAllAsync(`PRAGMA table_info(tasks);`);
@@ -374,6 +465,7 @@ const migrateTasksTable = async (db) => {
               title TEXT NOT NULL,
               description TEXT,
               status TEXT NOT NULL DEFAULT 'pending',
+              scheduled_at TEXT,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               synced INTEGER NOT NULL DEFAULT 0,
@@ -391,13 +483,14 @@ const migrateTasksTable = async (db) => {
             const updatedAt = task.updated_at || task.updatedAt || currentTimestamp;
             
             await db.runAsync(`
-              INSERT INTO tasks_new (id, title, description, status, created_at, updated_at, synced, server_id)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+              INSERT INTO tasks_new (id, title, description, status, scheduled_at, created_at, updated_at, synced, server_id)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
             `, [
               task.id,
               task.title,
               task.description || null,
               task.status || 'pending',
+              task.scheduled_at || null,
               createdAt,
               updatedAt,
               task.synced !== undefined ? task.synced : 0,
@@ -419,6 +512,7 @@ const migrateTasksTable = async (db) => {
               title TEXT NOT NULL,
               description TEXT,
               status TEXT NOT NULL DEFAULT 'pending',
+              scheduled_at TEXT,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               synced INTEGER NOT NULL DEFAULT 0,
@@ -485,6 +579,7 @@ const migrateTasksTable = async (db) => {
               title TEXT NOT NULL,
               description TEXT,
               status TEXT NOT NULL DEFAULT 'pending',
+              scheduled_at TEXT,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               synced INTEGER NOT NULL DEFAULT 0,
@@ -505,13 +600,14 @@ const migrateTasksTable = async (db) => {
             const updatedAt = oldTask.updatedAt || oldTask.updated_at || currentTimestamp;
             
             await db.runAsync(`
-              INSERT INTO tasks_new (id, title, description, status, created_at, updated_at, synced, server_id)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+              INSERT INTO tasks_new (id, title, description, status, scheduled_at, created_at, updated_at, synced, server_id)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
             `, [
               oldTask.id,
               oldTask.title,
               oldTask.description || null,
               oldTask.status || 'pending',
+              oldTask.scheduled_at || oldTask.scheduledAt || null,
               createdAt,
               updatedAt,
               oldTask.synced !== undefined ? oldTask.synced : 0,
@@ -533,6 +629,7 @@ const migrateTasksTable = async (db) => {
               title TEXT NOT NULL,
               description TEXT,
               status TEXT NOT NULL DEFAULT 'pending',
+              scheduled_at TEXT,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               synced INTEGER NOT NULL DEFAULT 0,
@@ -620,6 +717,7 @@ const migrateTasksTable = async (db) => {
               title TEXT NOT NULL,
               description TEXT,
               status TEXT NOT NULL DEFAULT 'pending',
+              scheduled_at TEXT,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               synced INTEGER NOT NULL DEFAULT 0,
@@ -632,13 +730,14 @@ const migrateTasksTable = async (db) => {
             const updatedAt = task.updated_at || task.updatedAt || currentTimestamp;
             
             await db.runAsync(`
-              INSERT INTO tasks (id, title, description, status, created_at, updated_at, synced, server_id)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+              INSERT INTO tasks (id, title, description, status, scheduled_at, created_at, updated_at, synced, server_id)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
             `, [
               task.id,
               task.title,
               task.description || null,
               task.status || 'pending',
+              task.scheduled_at || null,
               createdAt,
               updatedAt,
               task.synced !== undefined ? task.synced : 0,
@@ -654,6 +753,7 @@ const migrateTasksTable = async (db) => {
               title TEXT NOT NULL,
               description TEXT,
               status TEXT NOT NULL DEFAULT 'pending',
+              scheduled_at TEXT,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               synced INTEGER NOT NULL DEFAULT 0,
@@ -722,6 +822,7 @@ const migrateTasksTable = async (db) => {
               title TEXT NOT NULL,
               description TEXT,
               status TEXT NOT NULL DEFAULT 'pending',
+              scheduled_at TEXT,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               synced INTEGER NOT NULL DEFAULT 0,
@@ -738,13 +839,14 @@ const migrateTasksTable = async (db) => {
             const updatedAt = task.updated_at || new Date().toISOString();
             
             await db.runAsync(`
-              INSERT INTO tasks_fixed (id, title, description, status, created_at, updated_at, synced, server_id)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+              INSERT INTO tasks_fixed (id, title, description, status, scheduled_at, created_at, updated_at, synced, server_id)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
             `, [
               task.id,
               task.title,
               task.description || null,
               task.status || 'pending',
+              task.scheduled_at || null,
               createdAt,
               updatedAt,
               task.synced !== undefined ? task.synced : 0,
@@ -765,6 +867,7 @@ const migrateTasksTable = async (db) => {
               title TEXT NOT NULL,
               description TEXT,
               status TEXT NOT NULL DEFAULT 'pending',
+              scheduled_at TEXT,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL,
               synced INTEGER NOT NULL DEFAULT 0,

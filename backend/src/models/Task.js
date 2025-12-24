@@ -8,6 +8,7 @@
  * - title: Título da tarefa (obrigatório)
  * - description: Descrição da tarefa (opcional)
  * - status: Status da tarefa (pending, in_progress, completed)
+ * - scheduled_at: Data/hora agendada para a tarefa (opcional, ISO 8601)
  * - created_at: Data de criação (ISO 8601)
  * - updated_at: Data de última atualização (ISO 8601)
  */
@@ -43,6 +44,28 @@ const validateTask = (taskData) => {
     errors.push(`Status deve ser um dos seguintes: ${validStatuses.join(", ")}`);
   }
 
+  // Validar scheduled_at (opcional)
+  if (taskData.scheduled_at !== undefined && taskData.scheduled_at !== null) {
+    if (typeof taskData.scheduled_at !== "string") {
+      errors.push("scheduled_at deve ser uma string no formato ISO 8601");
+    } else {
+      // Validar formato ISO 8601
+      const dateRegex = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z?$/;
+      if (!dateRegex.test(taskData.scheduled_at)) {
+        errors.push("scheduled_at deve estar no formato ISO 8601 (ex: 2024-12-25T15:00:00.000Z)");
+      } else {
+        // Validar se é data futura
+        const scheduledDate = new Date(taskData.scheduled_at);
+        const now = new Date();
+        if (isNaN(scheduledDate.getTime())) {
+          errors.push("scheduled_at deve ser uma data válida");
+        } else if (scheduledDate <= now) {
+          errors.push("scheduled_at deve ser uma data futura");
+        }
+      }
+    }
+  }
+
   return {
     valid: errors.length === 0,
     errors,
@@ -61,6 +84,7 @@ const normalizeTask = (taskData) => {
     title: taskData.title ? taskData.title.trim() : "",
     description: taskData.description ? taskData.description.trim() : null,
     status: taskData.status || "pending",
+    scheduled_at: taskData.scheduled_at || null,
   };
 };
 
@@ -80,6 +104,7 @@ const createTaskObject = (taskData, id) => {
     title: normalized.title,
     description: normalized.description,
     status: normalized.status,
+    scheduled_at: normalized.scheduled_at,
     created_at: now,
     updated_at: now,
   };

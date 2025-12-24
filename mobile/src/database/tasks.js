@@ -21,6 +21,7 @@
 
 import { getDatabase } from "./db";
 import { tasksAPI } from "../services/api";
+import { scheduleTaskNotification, cancelTaskNotification } from "../services/fcm";
 
 /**
  * Gera um ID único para a tarefa
@@ -48,6 +49,7 @@ const getCurrentDate = () => {
  * @param {string} taskData.title - Título da tarefa (obrigatório)
  * @param {string} [taskData.description] - Descrição da tarefa (opcional)
  * @param {string} [taskData.status] - Status da tarefa (padrão: 'pending')
+ * @param {string} [taskData.scheduled_at] - Data/hora agendada para notificação (opcional, formato ISO 8601)
  * @param {string} [taskData.created_at] - Data de criação (opcional, usa data atual se não fornecido)
  * @param {string} [taskData.updated_at] - Data de atualização (opcional, usa data atual se não fornecido)
  * @param {string} [taskData.server_id] - ID da tarefa no servidor (opcional)
@@ -244,6 +246,7 @@ export const createTask = async (taskData) => {
       taskData.title.trim(),
       taskData.description ? taskData.description.trim() : null,
       taskData.status || "pending",
+      taskData.scheduled_at || null,
       createdAt, // Garantido que é string não-vazia
       updatedAt, // Garantido que é string não-vazia
       synced,
@@ -263,8 +266,8 @@ export const createTask = async (taskData) => {
     // #endregion
 
     await db.runAsync(
-      `INSERT INTO tasks (id, title, description, status, created_at, updated_at, synced, server_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+      `INSERT INTO tasks (id, title, description, status, scheduled_at, created_at, updated_at, synced, server_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`,
       insertValues
     );
     
@@ -300,7 +303,19 @@ export const createTask = async (taskData) => {
 
   // Buscar a tarefa criada para retornar os dados completos
   const rows = await db.getAllAsync(`SELECT * FROM tasks WHERE id = ?;`, [id]);
-  return rows.length > 0 ? rows[0] : null;
+  const createdTask = rows.length > 0 ? rows[0] : null;
+
+  // Agendar notificação se a tarefa tiver scheduled_at
+  if (createdTask && createdTask.scheduled_at) {
+    try {
+      await scheduleTaskNotification(createdTask.id, createdTask.scheduled_at, createdTask.title);
+    } catch (error) {
+      console.warn("⚠️ Erro ao agendar notificação (tarefa criada):", error);
+      // Não falhar a criação da tarefa se o agendamento falhar
+    }
+  }
+
+  return createdTask;
 };
 
 /**
@@ -375,6 +390,16 @@ export const updateTask = async (id, updates) => {
     fields.push("status = ?");
     values.push(updates.status);
   }
+
+  // Buscar tarefa atual antes de atualizar para verificar mudanças em scheduled_at
+  const currentTask = await getTaskById(id);
+  const hadScheduledAt = currentTask && currentTask.scheduled_at;
+  const newScheduledAt = updates.scheduled_at;
+
+  if (updates.scheduled_at !== undefined) {
+    fields.push("scheduled_at = ?");
+    values.push(updates.scheduled_at);
+  }
   if (updates.server_id !== undefined) {
     fields.push("server_id = ?");
     values.push(updates.server_id);
@@ -401,7 +426,38 @@ export const updateTask = async (id, updates) => {
   await db.runAsync(query, values);
 
   // Buscar tarefa atualizada
-  return getTaskById(id);
+  const updatedTask = await getTaskById(id);
+
+  // Gerenciar notificações baseado em mudanças em scheduled_at
+  if (updatedTask) {
+    // Se tinha agendamento e foi removido, cancelar notificação
+    if (hadScheduledAt && !newScheduledAt) {
+      try {
+        await cancelTaskNotification(id);
+      } catch (error) {
+        console.warn("⚠️ Erro ao cancelar notificação:", error);
+      }
+    }
+    // Se tinha agendamento e mudou, cancelar antiga e criar nova
+    else if (hadScheduledAt && newScheduledAt && newScheduledAt !== currentTask.scheduled_at) {
+      try {
+        await cancelTaskNotification(id);
+        await scheduleTaskNotification(id, newScheduledAt, updatedTask.title);
+      } catch (error) {
+        console.warn("⚠️ Erro ao atualizar notificação:", error);
+      }
+    }
+    // Se não tinha agendamento e agora tem, criar notificação
+    else if (!hadScheduledAt && newScheduledAt) {
+      try {
+        await scheduleTaskNotification(id, newScheduledAt, updatedTask.title);
+      } catch (error) {
+        console.warn("⚠️ Erro ao agendar notificação:", error);
+      }
+    }
+  }
+
+  return updatedTask;
 };
 
 /**
@@ -424,6 +480,15 @@ export const deleteTask = async (id) => {
     return false;
   }
   
+  // Cancelar notificação se a tarefa tinha agendamento
+  if (task.scheduled_at) {
+    try {
+      await cancelTaskNotification(id);
+    } catch (error) {
+      console.warn("⚠️ Erro ao cancelar notificação:", error);
+    }
+  }
+
   // Deletar do banco local
   await db.runAsync(`DELETE FROM tasks WHERE id = ?;`, [id]);
   console.log(`✅ Tarefa ${id} deletada localmente`);

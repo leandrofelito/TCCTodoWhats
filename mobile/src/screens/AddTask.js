@@ -44,6 +44,60 @@ export default function AddTaskScreen({ navigation }) {
   const [timeInput, setTimeInput] = useState("");
 
   /**
+   * Formata o input de data enquanto o usuário digita (DD/MM/YYYY)
+   */
+  const formatDateInput = (text) => {
+    // Remove tudo que não é número
+    const numbers = text.replace(/\D/g, "");
+    
+    // Limita a 8 dígitos (DDMMYYYY)
+    const limited = numbers.slice(0, 8);
+    
+    // Adiciona barras automaticamente
+    if (limited.length <= 2) {
+      return limited;
+    } else if (limited.length <= 4) {
+      return `${limited.slice(0, 2)}/${limited.slice(2)}`;
+    } else {
+      return `${limited.slice(0, 2)}/${limited.slice(2, 4)}/${limited.slice(4)}`;
+    }
+  };
+
+  /**
+   * Formata o input de hora enquanto o usuário digita (HH:MM)
+   */
+  const formatTimeInput = (text) => {
+    // Remove tudo que não é número
+    const numbers = text.replace(/\D/g, "");
+    
+    // Limita a 4 dígitos (HHMM)
+    const limited = numbers.slice(0, 4);
+    
+    // Adiciona dois pontos automaticamente
+    if (limited.length <= 2) {
+      return limited;
+    } else {
+      return `${limited.slice(0, 2)}:${limited.slice(2)}`;
+    }
+  };
+
+  /**
+   * Handler para mudança de input de data
+   */
+  const handleDateInputChange = (text) => {
+    const formatted = formatDateInput(text);
+    setDateInput(formatted);
+  };
+
+  /**
+   * Handler para mudança de input de hora
+   */
+  const handleTimeInputChange = (text) => {
+    const formatted = formatTimeInput(text);
+    setTimeInput(formatted);
+  };
+
+  /**
    * Handler para confirmar data/hora
    */
   const handleConfirmDateTime = () => {
@@ -251,19 +305,22 @@ export default function AddTaskScreen({ navigation }) {
               <TouchableOpacity
                 style={styles.dateTimeButton}
                 onPress={() => {
-                  // Inicializar inputs com valores atuais
+                  // Inicializar inputs com valores atuais formatados
                   const now = new Date();
                   const tomorrow = new Date(now);
                   tomorrow.setDate(tomorrow.getDate() + 1);
-                  setDateInput(tomorrow.toLocaleDateString("pt-BR", {
-                    day: "2-digit",
-                    month: "2-digit",
-                    year: "numeric",
-                  }).replace(/\//g, "/"));
-                  setTimeInput(tomorrow.toLocaleTimeString("pt-BR", {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  }).slice(0, 5));
+                  
+                  // Formatar data como DD/MM/YYYY
+                  const day = String(tomorrow.getDate()).padStart(2, "0");
+                  const month = String(tomorrow.getMonth() + 1).padStart(2, "0");
+                  const year = tomorrow.getFullYear();
+                  setDateInput(`${day}/${month}/${year}`);
+                  
+                  // Formatar hora como HH:MM
+                  const hour = String(tomorrow.getHours()).padStart(2, "0");
+                  const minute = String(tomorrow.getMinutes()).padStart(2, "0");
+                  setTimeInput(`${hour}:${minute}`);
+                  
                   setShowDatePicker(true);
                 }}
               >
@@ -286,10 +343,11 @@ export default function AddTaskScreen({ navigation }) {
                       <Text style={styles.inputLabel}>Data (DD/MM/YYYY)</Text>
                       <TextInput
                         style={styles.modalInput}
-                        placeholder="Ex: 25/12/2024"
+                        placeholder="DD/MM/YYYY"
                         value={dateInput}
-                        onChangeText={setDateInput}
+                        onChangeText={handleDateInputChange}
                         keyboardType="numeric"
+                        maxLength={10}
                       />
                     </View>
                     
@@ -297,10 +355,11 @@ export default function AddTaskScreen({ navigation }) {
                       <Text style={styles.inputLabel}>Hora (HH:MM)</Text>
                       <TextInput
                         style={styles.modalInput}
-                        placeholder="Ex: 15:30"
+                        placeholder="HH:MM"
                         value={timeInput}
-                        onChangeText={setTimeInput}
+                        onChangeText={handleTimeInputChange}
                         keyboardType="numeric"
+                        maxLength={5}
                       />
                     </View>
                     

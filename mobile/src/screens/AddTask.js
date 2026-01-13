@@ -42,7 +42,6 @@ export default function AddTaskScreen({ navigation }) {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [dateInput, setDateInput] = useState("");
   const [timeInput, setTimeInput] = useState("");
-  const [modalOpenTime, setModalOpenTime] = useState(null);
 
   /**
    * Formata o input de data enquanto o usuário digita (DD/MM/YYYY)
@@ -132,29 +131,41 @@ export default function AddTaskScreen({ navigation }) {
       return;
     }
 
-    // Usar o horário de quando o modal foi aberto, não o horário atual
-    // Isso evita que o tempo decorrido entre abrir e confirmar cause erro
-    const referenceTime = modalOpenTime || new Date();
-    const referenceNormalized = new Date(
-      referenceTime.getFullYear(),
-      referenceTime.getMonth(),
-      referenceTime.getDate(),
-      referenceTime.getHours(),
-      referenceTime.getMinutes(),
-      0,
-      0
+    // Usar o horário atual no momento da validação para garantir precisão
+    // Criar ambas as datas de forma consistente (mesmo timezone local)
+    const now = new Date();
+    const nextMinute = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      now.getHours(),
+      now.getMinutes() + 1, // Próximo minuto
+      0, // segundos
+      0  // milissegundos
     );
 
-    // Comparar: deve ser maior que o minuto de referência
+    // Comparar: deve ser maior que o próximo minuto
     // Se são 19:00 (qualquer segundo), permite agendar para 19:01 ou mais
     // Se são 19:00:30, ainda permite agendar para 19:01 ou mais
-    // Adicionar 1 minuto ao minuto de referência para garantir que seja pelo menos o próximo minuto
-    const nextMinute = new Date(referenceNormalized);
-    nextMinute.setMinutes(nextMinute.getMinutes() + 1);
-    
-    // Se a data agendada for menor que o próximo minuto, dar erro
-    if (newDate < nextMinute) {
-      Alert.alert("Erro", "A data/hora deve ser no futuro (pelo menos 1 minuto a partir de agora).");
+    if (newDate <= nextMinute) {
+      const nowFormatted = now.toLocaleString("pt-BR", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      const newDateFormatted = newDate.toLocaleString("pt-BR", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      Alert.alert(
+        "Erro",
+        `A data/hora deve ser no futuro (pelo menos 1 minuto a partir de agora).\n\nAgora: ${nowFormatted}\nTentado: ${newDateFormatted}`
+      );
       return;
     }
 
@@ -353,9 +364,6 @@ export default function AddTaskScreen({ navigation }) {
               <TouchableOpacity
                 style={styles.dateTimeButton}
                 onPress={() => {
-                  // Capturar o horário atual quando o modal abre (para validação)
-                  setModalOpenTime(new Date());
-                  
                   // Inicializar inputs com valores atuais formatados
                   const now = new Date();
                   const tomorrow = new Date(now);

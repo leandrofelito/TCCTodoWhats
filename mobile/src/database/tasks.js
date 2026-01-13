@@ -257,15 +257,18 @@ export const createTask = async (taskData) => {
     ];
 
     // Validação final dos valores no array antes do INSERT
-    if (insertValues[4] === null || insertValues[4] === undefined || insertValues[4] === '') {
-      throw new Error(`createdAt no array está inválido: ${insertValues[4]} (índice 4)`);
-    }
+    // IMPORTANTE: A ordem do array é:
+    // [0] id, [1] title, [2] description, [3] status, [4] scheduled_at, [5] created_at, [6] updated_at, [7] synced, [8] server_id
+    // Por isso validamos índices 5 e 6 para created_at e updated_at
     if (insertValues[5] === null || insertValues[5] === undefined || insertValues[5] === '') {
-      throw new Error(`updatedAt no array está inválido: ${insertValues[5]} (índice 5)`);
+      throw new Error(`createdAt no array está inválido: ${insertValues[5]} (índice 5)`);
+    }
+    if (insertValues[6] === null || insertValues[6] === undefined || insertValues[6] === '') {
+      throw new Error(`updatedAt no array está inválido: ${insertValues[6]} (índice 6)`);
     }
 
     // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/900d3e87-1857-467b-b71f-e58429934408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'tasks.js:212',message:'BEFORE INSERT - final values',data:{insertValues,createdAtValue:insertValues[4],updatedAtValue:insertValues[5],createdAtType:typeof insertValues[4],updatedAtType:typeof insertValues[5]},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
+    fetch('http://127.0.0.1:7242/ingest/900d3e87-1857-467b-b71f-e58429934408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'tasks.js:212',message:'BEFORE INSERT - final values',data:{insertValues,createdAtValue:insertValues[5],updatedAtValue:insertValues[6],createdAtType:typeof insertValues[5],updatedAtType:typeof insertValues[6]},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'C'})}).catch(()=>{});
     // #endregion
 
     await db.runAsync(

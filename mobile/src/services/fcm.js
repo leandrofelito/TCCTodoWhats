@@ -162,7 +162,10 @@ export const scheduleTaskNotification = async (taskId, scheduledAt, title) => {
         sound: true,
         priority: Notifications.AndroidNotificationPriority.HIGH,
       },
-      trigger: scheduledDate,
+      trigger: {
+        type: "date",
+        date: scheduledDate,
+      },
     });
 
     console.log(`✅ Notificação agendada para tarefa ${taskId} em ${scheduledDate.toLocaleString("pt-BR")}`);

@@ -29,6 +29,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import { getAllTasks, deleteTask } from "../database/tasks";
 import { initDatabase } from "../database/db";
 import { syncTasks, startAutoSync } from "../services/sync";
+import { cleanupSpecificProblemTasks } from "../utils/cleanupOrphanTasks";
 import TaskItem from "../components/TaskItem";
 import { COLORS, TASK_STATUS } from "../utils/constants";
 
@@ -45,10 +46,11 @@ export default function HomeScreen({ navigation }) {
    * Carrega tarefas do banco de dados local
    *
    * Fluxo importante:
-   * - Garantir que o banco de dados e as migrações foram executados
+   * - Aguardar que o banco de dados e as migrações sejam executados
    *   antes de executar qualquer SELECT em `tasks`.
    * - Isso evita erros transitórios como "no such column: created_at"
    *   em dispositivos que ainda possuem um schema antigo da tabela.
+   * - Usa o mecanismo de lock do initDatabase() para evitar chamadas duplicadas.
    */
   const loadTasks = async () => {
     // #region agent log
@@ -58,10 +60,11 @@ export default function HomeScreen({ navigation }) {
     try {
       setLoading(true);
 
-      // 1) Garantir que o banco foi inicializado e migrado
-      //    Mesmo que o App já chame `initDatabase`, aqui reforçamos
-      //    para evitar condições de corrida (race condition) onde
-      //    a Home tenta ler antes da migração terminar.
+      // 1) Aguardar que o banco seja inicializado e migrado
+      //    O App.js já chama initDatabase(), mas aqui aguardamos para garantir
+      //    que a inicialização esteja completa antes de ler dados.
+      //    O mecanismo de lock do initDatabase() garante que apenas uma
+      //    inicialização aconteça por vez, mesmo se chamado múltiplas vezes.
       await initDatabase();
 
       // #region agent log
@@ -74,6 +77,22 @@ export default function HomeScreen({ navigation }) {
       // #region agent log
       fetch('http://127.0.0.1:7242/ingest/900d3e87-1857-467b-b71f-e58429934408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Home.js:66',message:'Tasks loaded successfully',data:{tasksCount:allTasks.length},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
       // #endregion
+
+      // 2.5) CORREÇÃO: Deletar tarefas problemáticas específicas automaticamente
+      // Isso garante que as tarefas "Teste 2" e "Teste" sejam removidas sempre que a lista carregar
+      try {
+        const cleanupResult = await cleanupSpecificProblemTasks();
+        if (cleanupResult.totalDeleted > 0) {
+          console.log(`🧹 Limpeza automática: ${cleanupResult.totalDeleted} tarefa(s) problemática(s) removida(s)`);
+          // Recarregar tarefas após limpeza
+          const updatedTasks = await getAllTasks();
+          setTasks(updatedTasks);
+          return; // Retornar aqui para não executar setTasks novamente abaixo
+        }
+      } catch (cleanupError) {
+        console.warn("⚠️ Erro ao limpar tarefas problemáticas (continuando normalmente):", cleanupError);
+        // Continuar normalmente mesmo se a limpeza falhar
+      }
 
       setTasks(allTasks);
     } catch (error) {

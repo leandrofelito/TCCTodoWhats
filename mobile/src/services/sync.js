@@ -104,6 +104,35 @@ export const syncTasks = async () => {
       // Continuar mesmo se falhar, pois já sincronizamos as locais
     }
 
+    // 4.5. CORREÇÃO: Detectar e limpar tarefas órfãs (com server_id que não existe no servidor)
+    if (serverTasks.length > 0) {
+      const allLocalTasks = await getAllTasks();
+      const serverIds = new Set(serverTasks.map(t => t.id));
+      
+      // Encontrar tarefas órfãs
+      const orphanTasks = allLocalTasks.filter(task => {
+        return task.server_id && !serverIds.has(task.server_id);
+      });
+      
+      if (orphanTasks.length > 0) {
+        console.log(`🔍 Detectadas ${orphanTasks.length} tarefa(s) órfã(s) (server_id não existe no servidor)`);
+        
+        // Remover server_id e marcar como não sincronizada para recriação
+        const { updateTask } = await import("../database/tasks");
+        for (const orphanTask of orphanTasks) {
+          try {
+            console.log(`🔧 Removendo server_id da tarefa órfã "${orphanTask.title}" (${orphanTask.id})`);
+            await updateTask(orphanTask.id, {
+              server_id: null,
+              synced: false,
+            });
+          } catch (error) {
+            console.error(`❌ Erro ao corrigir tarefa órfã ${orphanTask.id}:`, error);
+          }
+        }
+      }
+    }
+
     // 5. Atualizar/inserir tarefas locais com dados do servidor
     if (serverTasks.length > 0) {
       await syncServerTasksToLocal(serverTasks);

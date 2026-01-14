@@ -390,6 +390,10 @@ export const getTaskById = async (id) => {
 
 /**
  * Atualiza uma tarefa existente
+ * 
+ * CORREÇÃO: Agora trata tarefas órfãs (com server_id que não existe no servidor).
+ * Se a tarefa tiver server_id mas não existir no servidor, remove o server_id
+ * e marca como não sincronizada para que seja recriada na próxima sincronização.
  *
  * @param {string} id - ID da tarefa
  * @param {Object} updates - Campos a atualizar
@@ -398,6 +402,33 @@ export const getTaskById = async (id) => {
 export const updateTask = async (id, updates) => {
   const db = await getDatabase();
   const now = getCurrentDate();
+
+  // Buscar tarefa atual antes de atualizar
+  const currentTask = await getTaskById(id);
+  
+  if (!currentTask) {
+    console.warn(`⚠️ Tarefa ${id} não encontrada para atualizar`);
+    return null;
+  }
+
+  // CORREÇÃO: Verificar se a tarefa tem server_id mas não existe no servidor (tarefa órfã)
+  // Se sim, remover o server_id e marcar como não sincronizada
+  if (currentTask.server_id && !updates.server_id) {
+    try {
+      // Tentar buscar a tarefa no servidor para verificar se existe
+      await tasksAPI.getById(currentTask.server_id);
+    } catch (error) {
+      // Se der erro 404, a tarefa não existe no servidor (tarefa órfã)
+      if (error.response?.status === 404) {
+        console.log(`ℹ️ Tarefa ${id} tem server_id ${currentTask.server_id} que não existe no servidor (tarefa órfã)`);
+        console.log(`🔧 Removendo server_id e marcando como não sincronizada para recriação`);
+        
+        // Remover server_id e marcar como não sincronizada
+        updates.server_id = null;
+        updates.synced = false;
+      }
+    }
+  }
 
   // Construir query dinamicamente baseado nos campos fornecidos
   const fields = [];
@@ -416,8 +447,6 @@ export const updateTask = async (id, updates) => {
     values.push(updates.status);
   }
 
-  // Buscar tarefa atual antes de atualizar para verificar mudanças em scheduled_at
-  const currentTask = await getTaskById(id);
   const hadScheduledAt = currentTask && currentTask.scheduled_at;
   const newScheduledAt = updates.scheduled_at;
 
@@ -486,10 +515,168 @@ export const updateTask = async (id, updates) => {
 };
 
 /**
+ * Busca tarefas por título (busca parcial)
+ * 
+ * @param {string} title - Título ou parte do título para buscar
+ * @returns {Promise<Array>} Lista de tarefas encontradas
+ */
+export const getTasksByTitle = async (title) => {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync(
+    `SELECT * FROM tasks WHERE title LIKE ? ORDER BY created_at DESC;`,
+    [`%${title}%`]
+  );
+  return rows;
+};
+
+/**
+ * Busca tarefas por título exato
+ * 
+ * @param {string} title - Título exato para buscar
+ * @returns {Promise<Array>} Lista de tarefas encontradas
+ */
+export const getTasksByExactTitle = async (title) => {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync(
+    `SELECT * FROM tasks WHERE title = ? ORDER BY created_at DESC;`,
+    [title]
+  );
+  return rows;
+};
+
+/**
+ * Deleta tarefas por título exato (força deleção local mesmo com erro no servidor)
+ * 
+ * Esta função foi criada especificamente para deletar tarefas problemáticas
+ * que causam erro 404. Ela força a deleção local mesmo se o servidor retornar erro.
+ * 
+ * @param {string} title - Título exato para deletar
+ * @returns {Promise<number>} Número de tarefas deletadas
+ */
+export const forceDeleteTasksByExactTitle = async (title) => {
+  const db = await getDatabase();
+  
+  // Buscar tarefas com título exato
+  const tasks = await getTasksByExactTitle(title);
+  
+  if (tasks.length === 0) {
+    console.log(`ℹ️ Nenhuma tarefa encontrada com título exato "${title}"`);
+    return 0;
+  }
+  
+  console.log(`🔍 Encontradas ${tasks.length} tarefa(s) com título exato "${title}"`);
+  console.log(`🗑️ Forçando deleção local (ignorando erros do servidor)...`);
+  
+  let deletedCount = 0;
+  
+  for (const task of tasks) {
+    try {
+      // Cancelar notificação se a tarefa tinha agendamento
+      if (task.scheduled_at) {
+        try {
+          await cancelTaskNotification(task.id);
+        } catch (error) {
+          console.warn(`⚠️ Erro ao cancelar notificação da tarefa ${task.id}:`, error);
+        }
+      }
+
+      // FORÇAR deleção do banco local (ignorar qualquer erro do servidor)
+      await db.runAsync(`DELETE FROM tasks WHERE id = ?;`, [task.id]);
+      console.log(`✅ Tarefa "${task.title}" (${task.id}) FORÇADA a deletar localmente`);
+      deletedCount++;
+      
+      // Tentar deletar no servidor, mas ignorar completamente qualquer erro
+      if (task.server_id) {
+        try {
+          await tasksAPI.delete(task.server_id);
+          console.log(`✅ Tarefa ${task.server_id} deletada no servidor`);
+        } catch (error) {
+          // IGNORAR COMPLETAMENTE qualquer erro do servidor
+          // A tarefa já foi deletada localmente, que é o objetivo principal
+          console.log(`ℹ️ Tarefa ${task.server_id} não existe no servidor ou erro ao deletar (ignorado)`);
+        }
+      }
+    } catch (error) {
+      console.error(`❌ Erro ao deletar tarefa ${task.id}:`, error);
+    }
+  }
+  
+  console.log(`✅ Total de ${deletedCount} tarefa(s) deletada(s) com título "${title}"`);
+  return deletedCount;
+};
+
+/**
+ * Deleta tarefas por título (busca parcial)
+ * 
+ * Útil para limpar tarefas problemáticas específicas
+ * 
+ * @param {string} title - Título ou parte do título para deletar
+ * @returns {Promise<number>} Número de tarefas deletadas
+ */
+export const deleteTasksByTitle = async (title) => {
+  const db = await getDatabase();
+  
+  // Buscar tarefas com esse título
+  const tasks = await getTasksByTitle(title);
+  
+  if (tasks.length === 0) {
+    console.log(`ℹ️ Nenhuma tarefa encontrada com título contendo "${title}"`);
+    return 0;
+  }
+  
+  console.log(`🔍 Encontradas ${tasks.length} tarefa(s) com título contendo "${title}"`);
+  
+  let deletedCount = 0;
+  
+  for (const task of tasks) {
+    try {
+      // Cancelar notificação se a tarefa tinha agendamento
+      if (task.scheduled_at) {
+        try {
+          await cancelTaskNotification(task.id);
+        } catch (error) {
+          console.warn(`⚠️ Erro ao cancelar notificação da tarefa ${task.id}:`, error);
+        }
+      }
+
+      // Deletar do banco local
+      await db.runAsync(`DELETE FROM tasks WHERE id = ?;`, [task.id]);
+      console.log(`✅ Tarefa "${task.title}" (${task.id}) deletada localmente`);
+      deletedCount++;
+      
+      // Se a tarefa tem server_id, tentar deletar no servidor também
+      // Mas não falhar se der erro 404 (tarefa já não existe no servidor)
+      if (task.server_id) {
+        try {
+          await tasksAPI.delete(task.server_id);
+          console.log(`✅ Tarefa ${task.server_id} deletada no servidor`);
+        } catch (error) {
+          // Se for erro 404, a tarefa já não existe no servidor (tarefa órfã)
+          // Isso é esperado e não é um problema
+          if (error.response?.status === 404) {
+            console.log(`ℹ️ Tarefa ${task.server_id} já não existe no servidor (tarefa órfã)`);
+          } else {
+            // Outro tipo de erro, apenas avisar
+            console.warn(`⚠️ Não foi possível deletar tarefa ${task.server_id} no servidor:`, error.message);
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`❌ Erro ao deletar tarefa ${task.id}:`, error);
+    }
+  }
+  
+  return deletedCount;
+};
+
+/**
  * Deleta uma tarefa do banco de dados
  * 
  * IMPORTANTE: Também tenta deletar no servidor se a tarefa tiver server_id.
  * Isso previne que a tarefa seja recriada durante a sincronização automática.
+ * 
+ * CORREÇÃO: Agora trata erros 404 (tarefa não encontrada no servidor) como sucesso,
+ * pois indica que a tarefa já foi deletada ou nunca existiu no servidor (tarefa órfã).
  *
  * @param {string} id - ID da tarefa
  * @returns {Promise<boolean>} true se deletada com sucesso
@@ -525,9 +712,15 @@ export const deleteTask = async (id) => {
       await tasksAPI.delete(task.server_id);
       console.log(`✅ Tarefa ${task.server_id} deletada no servidor`);
     } catch (error) {
-      // Não falhar se não conseguir deletar no servidor
-      // A tarefa já foi deletada localmente
-      console.warn(`⚠️ Não foi possível deletar tarefa ${task.server_id} no servidor:`, error.message);
+      // CORREÇÃO: Se for erro 404, a tarefa já não existe no servidor (tarefa órfã)
+      // Isso é esperado e não é um problema - apenas logar e continuar
+      if (error.response?.status === 404) {
+        console.log(`ℹ️ Tarefa ${task.server_id} já não existe no servidor (tarefa órfã removida)`);
+      } else {
+        // Outro tipo de erro, apenas avisar mas não falhar
+        // A tarefa já foi deletada localmente
+        console.warn(`⚠️ Não foi possível deletar tarefa ${task.server_id} no servidor:`, error.message);
+      }
     }
   }
   

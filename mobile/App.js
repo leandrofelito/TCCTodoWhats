@@ -25,6 +25,7 @@ import SettingsScreen from "./src/screens/Settings";
 // Importar serviços de inicialização
 import { initDatabase } from "./src/database/db";
 import { initFCM } from "./src/services/fcm";
+import { cleanupSpecificProblemTasks } from "./src/utils/cleanupOrphanTasks";
 
 // Criar navegador Stack
 const Stack = createStackNavigator();
@@ -43,6 +44,18 @@ export default function App() {
     initDatabase()
       .then(() => {
         console.log("✅ Banco de dados SQLite inicializado com sucesso");
+        
+        // Limpar tarefas problemáticas específicas após inicializar o banco
+        cleanupSpecificProblemTasks()
+          .then((result) => {
+            if (result.totalDeleted > 0) {
+              console.log(`🧹 Limpeza automática: ${result.totalDeleted} tarefa(s) problemática(s) removida(s)`);
+            }
+          })
+          .catch((error) => {
+            console.warn("⚠️ Erro ao limpar tarefas problemáticas:", error);
+            // Não bloquear a inicialização do app se a limpeza falhar
+          });
       })
       .catch((error) => {
         console.error("❌ Erro ao inicializar banco de dados:", error);

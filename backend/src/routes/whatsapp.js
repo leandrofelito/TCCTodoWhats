@@ -15,6 +15,36 @@ const witService = require("../services/wit");
 const db = require("../config/database");
 const fcmService = require("../services/fcm");
 const { extractDateTime } = require("../utils/dateParser");
+const { normalizeTask } = require("../models/Task");
+
+/**
+ * Normaliza valores de entidades vindas do Wit.ai ou do texto bruto.
+ * 
+ * Objetivo:
+ * - Garantir que title/description/status sejam strings válidas.
+ * - Evitar falhas quando as entidades vêm como array ou objeto.
+ * 
+ * @param {any} value - Valor bruto da entidade
+ * @param {string|null} fallback - Valor alternativo se o valor bruto for inválido
+ * @returns {string|null} Valor normalizado
+ */
+const normalizeEntityValue = (value, fallback = null) => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : fallback;
+  }
+
+  if (Array.isArray(value) && value.length > 0) {
+    return normalizeEntityValue(value[0], fallback);
+  }
+
+  if (value && typeof value === "object") {
+    const objectValue = value.value || value.text || value.body || value.message || null;
+    return normalizeEntityValue(objectValue, fallback);
+  }
+
+  return fallback;
+};
 
 /**
  * POST /api/whatsapp/send
@@ -69,7 +99,19 @@ router.post("/webhook", async (req, res) => {
   try {
     // Processar mensagem recebida
     const messageData = whatsappService.processReceivedMessage(req.body);
-    const { phone, message } = messageData;
+    const { phone, message, ignored, reason } = messageData;
+
+    if (ignored || !phone || !message) {
+      // Ignorar eventos de ack ou payloads sem campos minimos
+      console.log(
+        `⚠️ Webhook ignorado: phone=${phone} message=${message} reason=${reason || "missing_fields"}`
+      );
+      return res.json({
+        success: true,
+        ignored: true,
+        reason: reason || "missing_fields",
+      });
+    }
 
     console.log(`📱 Mensagem recebida de ${phone}: ${message}`);
 
@@ -94,19 +136,27 @@ router.post("/webhook", async (req, res) => {
       case "create_task":
       case "add_task":
         // Criar nova tarefa
-        const title = entities.title || entities.task_name || message;
-        const description = entities.description || null;
-        const status = entities.status || "pending";
+        const title = normalizeEntityValue(entities.title, null)
+          || normalizeEntityValue(entities.task_name, null)
+          || normalizeEntityValue(message, "Nova tarefa via WhatsApp");
+        const description = normalizeEntityValue(entities.description, null);
+        const rawStatus = normalizeEntityValue(entities.status, "pending");
+        const status = ["pending", "in_progress", "completed"].includes(rawStatus)
+          ? rawStatus
+          : "pending";
         
         // Extrair data/hora agendada da mensagem
         const scheduledAt = extractDateTime(message, entities);
 
-        taskCreated = db.createTask({
-          title: typeof title === "string" ? title : title[0],
-          description: description ? (typeof description === "string" ? description : description[0]) : null,
-          status: typeof status === "string" ? status : status[0],
+        // Normalizar payload da tarefa antes de persistir
+        const normalizedTask = normalizeTask({
+          title,
+          description,
+          status,
           scheduled_at: scheduledAt,
         });
+
+        taskCreated = db.createTask(normalizedTask);
 
         // Montar mensagem de resposta
         if (scheduledAt) {

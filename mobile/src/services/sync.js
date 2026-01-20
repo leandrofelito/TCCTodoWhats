@@ -60,23 +60,63 @@ export const syncTasks = async () => {
     // 2. Enviar tarefas não sincronizadas para o servidor
     let syncedIds = [];
     let serverTaskMap = new Map(); // Mapeamento de ID local -> server_id
+    let serverTasksFromSync = []; // Tarefas retornadas pelo sync (evita duplicação)
+    
     if (unsyncedTasks.length > 0) {
       try {
         const syncResult = await tasksAPI.sync(unsyncedTasks);
         syncedIds = syncResult.syncedIds || unsyncedTasks.map((t) => t.id);
         
-        // Se o servidor retornar um mapeamento de IDs, usar isso
-        // Caso contrário, precisaremos buscar do servidor depois
+        // CORREÇÃO CRÍTICA: Vincular server_id ANTES de processar outras tarefas
+        // Isso previne duplicação ao garantir que tarefas recém-criadas sejam vinculadas imediatamente
         if (syncResult.tasks && Array.isArray(syncResult.tasks)) {
-          // O servidor pode retornar as tarefas criadas com seus IDs
+          serverTasksFromSync = syncResult.tasks;
+          
+          // Buscar todas as tarefas locais para verificar duplicatas
+          const allLocalTasks = await getAllTasks();
+          
+          // Processar cada tarefa retornada pelo servidor
           for (const serverTask of syncResult.tasks) {
-            // Encontrar a tarefa local correspondente pelo título e timestamp
-            const localTask = unsyncedTasks.find(
-              t => t.title === serverTask.title && 
-              Math.abs(new Date(t.created_at) - new Date(serverTask.created_at || serverTask.createdAt)) < 5000
-            );
-            if (localTask) {
+            // Primeiro tentar encontrar por server_id (se já existe vinculação)
+            let localTask = allLocalTasks.find(t => t.server_id === serverTask.id);
+            
+            // Se não encontrou por server_id, tentar encontrar tarefa local não sincronizada
+            // que corresponde a esta tarefa do servidor (mesmo título e timestamp próximo)
+            if (!localTask) {
+              localTask = unsyncedTasks.find(t => {
+                // Verificar se já tem server_id (já foi vinculada)
+                if (t.server_id) return false;
+                
+                // Comparar títulos (normalizar espaços)
+                const localTitle = (t.title || "").trim();
+                const serverTitle = (serverTask.title || "").trim();
+                if (localTitle !== serverTitle) return false;
+                
+                // Comparar timestamps (dentro de 120 segundos para ser mais tolerante)
+                const localCreatedAt = t.created_at;
+                const serverCreatedAt = serverTask.created_at || serverTask.createdAt;
+                if (!localCreatedAt || !serverCreatedAt) return false;
+                
+                const timeDiff = Math.abs(
+                  new Date(localCreatedAt).getTime() - new Date(serverCreatedAt).getTime()
+                );
+                
+                return timeDiff < 120000; // 120 segundos (2 minutos)
+              });
+            }
+            
+            // Se encontrou tarefa local correspondente, vincular imediatamente
+            if (localTask && !localTask.server_id) {
               serverTaskMap.set(localTask.id, serverTask.id);
+              try {
+                await updateTask(localTask.id, {
+                  server_id: serverTask.id,
+                  synced: 1,
+                });
+                console.log(`✅ Tarefa local "${localTask.title}" (${localTask.id}) vinculada ao server_id: ${serverTask.id}`);
+              } catch (error) {
+                console.error(`❌ Erro ao vincular server_id para tarefa ${localTask.id}:`, error);
+              }
             }
           }
         }
@@ -89,16 +129,25 @@ export const syncTasks = async () => {
     }
 
     // 3. Marcar tarefas como sincronizadas localmente
-    // O server_id será atualizado quando baixarmos as tarefas do servidor
+    // Nota: Tarefas que foram vinculadas acima já estão marcadas como sincronizadas
+    // Aqui marcamos as que não foram vinculadas ainda (serão vinculadas depois)
     if (syncedIds.length > 0) {
       await markTasksAsSynced(syncedIds);
     }
 
     // 4. Baixar tarefas do servidor
+    // CORREÇÃO: Usar tarefas do sync se disponíveis, senão baixar todas
     let serverTasks = [];
     try {
-      serverTasks = await tasksAPI.getAll();
-      console.log(`📥 ${serverTasks.length} tarefas recebidas do servidor`);
+      if (serverTasksFromSync.length > 0) {
+        // Usar tarefas já retornadas pelo sync (evita duplicação)
+        serverTasks = serverTasksFromSync;
+        console.log(`📥 ${serverTasks.length} tarefas recebidas do sync (evitando duplicação)`);
+      } else {
+        // Se não temos tarefas do sync, baixar todas
+        serverTasks = await tasksAPI.getAll();
+        console.log(`📥 ${serverTasks.length} tarefas recebidas do servidor`);
+      }
     } catch (error) {
       console.error("❌ Erro ao baixar tarefas:", error);
       // Continuar mesmo se falhar, pois já sincronizamos as locais
@@ -180,9 +229,9 @@ const syncServerTasksToLocal = async (serverTasks) => {
     }
   }
   
-  // Mapa para encontrar tarefas sem server_id que foram sincronizadas recentemente
-  // (tarefas com synced=1 mas sem server_id são candidatas a serem vinculadas)
-  const unsyncedLocalTasks = localTasks.filter(t => !t.server_id && t.synced === 1);
+  // CORREÇÃO: Incluir TODAS as tarefas sem server_id (independente de synced)
+  // Tarefas recém-criadas têm synced=0, mas também precisam ser vinculadas
+  const unsyncedLocalTasks = localTasks.filter(t => !t.server_id);
   
   // Ordenar por created_at para tentar vincular na ordem correta
   unsyncedLocalTasks.sort((a, b) => 
@@ -199,9 +248,13 @@ const syncServerTasksToLocal = async (serverTasks) => {
       const serverCreatedAt = serverTask.created_at || serverTask.createdAt;
       const serverTitle = serverTask.title;
       
-      // Procurar tarefa local com mesmo título e timestamp próximo (dentro de 10 segundos)
+      // CORREÇÃO: Procurar tarefa local com mesmo título e timestamp próximo
+      // Usar janela de tempo maior (120 segundos) e normalizar títulos
       const matchingLocalTask = unsyncedLocalTasks.find(localTask => {
-        if (localTask.title !== serverTitle) return false;
+        // Normalizar títulos (remover espaços extras)
+        const localTitle = (localTask.title || "").trim();
+        const normalizedServerTitle = (serverTitle || "").trim();
+        if (localTitle !== normalizedServerTitle) return false;
         
         const localCreatedAt = localTask.created_at;
         if (!localCreatedAt || !serverCreatedAt) return false;
@@ -210,8 +263,8 @@ const syncServerTasksToLocal = async (serverTasks) => {
           new Date(localCreatedAt).getTime() - new Date(serverCreatedAt).getTime()
         );
         
-        // Considerar correspondência se a diferença for menor que 10 segundos
-        return timeDiff < 10000;
+        // CORREÇÃO: Usar janela de 120 segundos (2 minutos) para ser mais tolerante
+        return timeDiff < 120000;
       });
       
       if (matchingLocalTask) {
@@ -274,18 +327,56 @@ const syncServerTasksToLocal = async (serverTasks) => {
         title: serverTask.title,
       });
 
-      // Verificação final: garantir que não existe tarefa local idêntica antes de criar
-      // Isso previne duplicação mesmo se a correspondência falhar
-      const { getAllTasks } = await import("../database/tasks");
-      const allLocalTasks = await getAllTasks();
-      const duplicateCheck = allLocalTasks.find(t => 
-        t.title === serverTask.title && 
-        t.server_id === serverTask.id
-      );
+      // CORREÇÃO CRÍTICA: Verificação robusta anti-duplicata antes de criar
+      // Buscar tarefas locais NOVAMENTE para garantir que não foi vinculada entre o processamento
+      const currentLocalTasks = await getAllTasks();
+      const serverTitle = (serverTask.title || "").trim();
       
-      if (duplicateCheck) {
+      // Verificação 1: Verificar se já existe tarefa com mesmo server_id
+      const duplicateByServerId = currentLocalTasks.find(t => t.server_id === serverTask.id);
+      if (duplicateByServerId) {
         console.log(`⚠️ Tarefa com server_id ${serverTask.id} já existe localmente, pulando criação`);
         continue;
+      }
+      
+      // Verificação 2: Buscar tarefas locais sem server_id com mesmo título criadas recentemente
+      // Usar janela de tempo maior (120 segundos) para ser mais tolerante
+      const potentialDuplicates = currentLocalTasks.filter(t => {
+        if (t.server_id) return false; // Já tem server_id, não é duplicata
+        
+        const localTitle = (t.title || "").trim();
+        if (localTitle !== serverTitle) return false;
+        
+        // Verificar se foi criada recentemente (últimos 120 segundos)
+        const localCreatedAt = t.created_at;
+        if (!localCreatedAt || !serverCreatedAt) return false;
+        
+        const timeDiff = Math.abs(
+          new Date(localCreatedAt).getTime() - new Date(serverCreatedAt).getTime()
+        );
+        
+        return timeDiff < 120000; // 120 segundos (2 minutos)
+      });
+      
+      if (potentialDuplicates.length > 0) {
+        // Encontrou tarefa local correspondente, vincular ao invés de criar
+        const duplicateTask = potentialDuplicates[0]; // Pegar a primeira correspondência
+        console.log(`🔗 Tarefa local "${duplicateTask.title}" (${duplicateTask.id}) encontrada, vinculando ao server_id ${serverTask.id} ao invés de criar nova`);
+        
+        try {
+          await updateTask(duplicateTask.id, {
+            server_id: serverTask.id,
+            synced: 1,
+          });
+          console.log(`✅ Tarefa local ${duplicateTask.id} vinculada ao server_id: ${serverTask.id}`);
+          
+          // Atualizar o mapa para evitar processar novamente
+          localTasksMapByServerId.set(serverTask.id, { ...duplicateTask, server_id: serverTask.id });
+        } catch (error) {
+          console.error(`❌ Erro ao vincular tarefa duplicada ${duplicateTask.id}:`, error);
+        }
+        
+        continue; // Pular criação, já vinculamos
       }
 
       const newTask = await createTask({
@@ -345,8 +436,18 @@ const syncServerTasksToLocal = async (serverTasks) => {
  */
 export const startAutoSync = (callback) => {
   let intervalId = null;
+  let isSyncInProgress = false;
 
   const sync = async () => {
+    // Evita reentrada do auto-sync quando um ciclo anterior ainda está em execução.
+    // Isso previne loops de sincronização e chamadas concorrentes ao backend.
+    if (isSyncInProgress) {
+      console.log("⏳ Auto-sync ignorado: sincronização anterior ainda em andamento.");
+      return;
+    }
+
+    isSyncInProgress = true;
+
     try {
       const result = await syncTasks();
       if (callback) {
@@ -357,6 +458,9 @@ export const startAutoSync = (callback) => {
       if (callback) {
         callback({ success: false, error });
       }
+    } finally {
+      // Libera o lock para permitir o próximo ciclo de auto-sync.
+      isSyncInProgress = false;
     }
   };
 

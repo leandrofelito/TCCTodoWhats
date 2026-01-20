@@ -17,6 +17,71 @@
 const axios = require("axios");
 
 /**
+ * Normaliza valores de texto vindos de diferentes formatos de payload.
+ * 
+ * Objetivo:
+ * - Garantir que retornamos uma string utilizável mesmo quando o campo
+ *   vem como array, objeto ou string com espaços extras.
+ * 
+ * @param {any} value - Valor bruto do payload
+ * @returns {string|null} Texto normalizado ou null se inválido
+ */
+const normalizeTextValue = (value) => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  if (Array.isArray(value) && value.length > 0) {
+    const first = value[0];
+    return normalizeTextValue(first);
+  }
+
+  if (value && typeof value === "object") {
+    const textCandidates = [
+      value.text,
+      value.body,
+      value.message,
+      value.value,
+      value.caption,
+    ];
+
+    for (const candidate of textCandidates) {
+      const normalized = normalizeTextValue(candidate);
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+
+  return null;
+};
+
+/**
+ * Normaliza número de telefone (remove sufixos e caracteres não numéricos).
+ * 
+ * Objetivo:
+ * - Garantir que o número esteja no formato numérico puro,
+ *   mesmo que venha como "551199...@c.us" ou com símbolos.
+ * 
+ * @param {any} value - Valor bruto do telefone
+ * @returns {string|null} Telefone normalizado ou null
+ */
+const normalizePhoneValue = (value) => {
+  if (!value) {
+    return null;
+  }
+
+  let raw = String(value);
+  if (raw.includes("@")) {
+    raw = raw.split("@")[0];
+  }
+
+  const digitsOnly = raw.replace(/[^0-9]/g, "");
+  return digitsOnly.length > 0 ? digitsOnly : null;
+};
+
+/**
  * Envia mensagem via Ultramsg
  * 
  * @param {string} phone - Número do telefone (com código do país, sem +)
@@ -137,13 +202,90 @@ const sendWhatsAppMessage = async (phone, message) => {
  * @returns {Object} Dados processados
  */
 const processReceivedMessage = (messageData) => {
-  // Estrutura varia conforme a API usada
-  // Adaptar conforme necessário
-  
+  // Estrutura varia conforme a API usada (Ultramsg ou CallMeBot)
+  // Objetivo: normalizar phone/message e ignorar eventos que nao sao mensagens recebidas
+
+  const eventType = messageData?.event_type || messageData?.eventType || messageData?.type;
+  const data = messageData?.data || messageData?.payload || {};
+
+  // Ultramsg envia eventos de ack, que nao devem ser processados
+  if (eventType === "message_ack" || String(eventType || "").includes("ack")) {
+    return {
+      ignored: true,
+      reason: "ack_event",
+    };
+  }
+
+  // Candidatos de telefone variam conforme o provedor do WhatsApp
+  const phoneCandidates = [
+    data.from,
+    data.sender,
+    data.author,
+    data.phone,
+    data.chatId,
+    data.participant,
+    messageData.from,
+    messageData.phone,
+    messageData.sender,
+    messageData.author,
+    messageData.chatId,
+    messageData.wa_id,
+    messageData.participant,
+    messageData?.messages?.[0]?.from,
+  ];
+
+  // Candidatos de mensagem variam conforme o provedor do WhatsApp
+  const messageCandidates = [
+    data.body,
+    data.text,
+    data.message,
+    data.content,
+    data.caption,
+    data?.message?.body,
+    data?.message?.text,
+    messageData.text,
+    messageData.body,
+    messageData.message,
+    messageData?.messages?.[0]?.text?.body,
+    messageData?.messages?.[0]?.text,
+    messageData?.messages?.[0]?.body,
+  ];
+
+  let phoneRaw = null;
+  for (const candidate of phoneCandidates) {
+    const normalized = normalizePhoneValue(candidate);
+    if (normalized) {
+      phoneRaw = normalized;
+      break;
+    }
+  }
+
+  let messageRaw = null;
+  for (const candidate of messageCandidates) {
+    const normalized = normalizeTextValue(candidate);
+    if (normalized) {
+      messageRaw = normalized;
+      break;
+    }
+  }
+
+  const timestampRaw =
+    data.time ||
+    data.timestamp ||
+    messageData.timestamp ||
+    messageData.time ||
+    messageData?.messages?.[0]?.timestamp ||
+    null;
+
   return {
-    phone: messageData.from || messageData.phone,
-    message: messageData.text || messageData.body || messageData.message,
-    timestamp: messageData.timestamp || new Date().toISOString(),
+    phone: phoneRaw,
+    message: messageRaw,
+    timestamp: timestampRaw
+      ? new Date(
+          typeof timestampRaw === "number" ? timestampRaw * 1000 : timestampRaw
+        ).toISOString()
+      : new Date().toISOString(),
+    ignored: false,
   };
 };
 

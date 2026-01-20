@@ -15,7 +15,7 @@
  * - Indicador de status de sincronização (estado da lista)
  */
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View,
   Text,
@@ -26,7 +26,7 @@ import {
   Alert,
 } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
-import { getAllTasks, deleteTask } from "../database/tasks";
+import { getAllTasks, deleteTask, updateTask } from "../database/tasks";
 import { initDatabase } from "../database/db";
 import { syncTasks, startAutoSync } from "../services/sync";
 import { cleanupSpecificProblemTasks } from "../utils/cleanupOrphanTasks";
@@ -41,6 +41,7 @@ export default function HomeScreen({ navigation }) {
   const [filter, setFilter] = useState("all"); // all, pending, in_progress, completed
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
+  const isLoadingRef = useRef(false);
 
   /**
    * Carrega tarefas do banco de dados local
@@ -53,6 +54,15 @@ export default function HomeScreen({ navigation }) {
    * - Usa o mecanismo de lock do initDatabase() para evitar chamadas duplicadas.
    */
   const loadTasks = async () => {
+    // Evita reentrada do loadTasks quando syncs/disparos múltiplos ocorrem em paralelo.
+    // Isso reduz loop de atualização e garante que o banco seja lido apenas uma vez por ciclo.
+    if (isLoadingRef.current) {
+      console.log("⏳ loadTasks ignorado: já existe carregamento em andamento.");
+      return;
+    }
+
+    isLoadingRef.current = true;
+
     // #region agent log
     fetch('http://127.0.0.1:7242/ingest/900d3e87-1857-467b-b71f-e58429934408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Home.js:53',message:'loadTasks ENTRY',data:{timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
     // #endregion
@@ -100,6 +110,8 @@ export default function HomeScreen({ navigation }) {
       Alert.alert("Erro", "Não foi possível carregar as tarefas.");
     } finally {
       setLoading(false);
+      // Libera o lock do carregamento para permitir novos ciclos.
+      isLoadingRef.current = false;
     }
   };
 
@@ -171,6 +183,31 @@ export default function HomeScreen({ navigation }) {
   };
 
   /**
+   * Handler para concluir tarefa
+   */
+  const handleComplete = async (taskId) => {
+    try {
+      const updated = await updateTask(taskId, { status: TASK_STATUS.COMPLETED });
+      if (updated) {
+        // Recarregar lista imediatamente após atualizar
+        await loadTasks();
+        // Tentar sincronizar (não bloquear se falhar)
+        try {
+          await syncTasks();
+          await loadTasks();
+        } catch (syncError) {
+          console.warn("⚠️ Erro ao sincronizar após concluir (tarefa atualizada localmente):", syncError);
+        }
+      } else {
+        Alert.alert("Aviso", "Tarefa não encontrada.");
+      }
+    } catch (error) {
+      console.error("❌ Erro ao concluir tarefa:", error);
+      Alert.alert("Erro", "Não foi possível concluir a tarefa.");
+    }
+  };
+
+  /**
    * Handler para deletar tarefa
    */
   const handleDelete = (taskId) => {
@@ -224,7 +261,9 @@ export default function HomeScreen({ navigation }) {
     <TaskItem
       task={item}
       onPress={() => navigation.navigate("EditTask", { taskId: item.id })}
+      onEdit={() => navigation.navigate("EditTask", { taskId: item.id })}
       onDelete={() => handleDelete(item.id)}
+      onComplete={() => handleComplete(item.id)}
     />
   );
 

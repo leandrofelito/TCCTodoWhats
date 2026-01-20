@@ -132,6 +132,38 @@ const parseDateTime = (text) => {
     }
   }
 
+  // Horário isolado (sem data explícita) - ex: "10h", "10 horas", "às 10"
+  // Regra: usar próxima ocorrência futura; se já passou hoje, agendar amanhã
+  const hasStructuredDate = /(\d{2}\/\d{2}\/\d{4})|(\d{4}-\d{2}-\d{2})/.test(lowerText);
+  const hasRelativeKeyword = lowerText.includes("hoje")
+    || lowerText.includes("amanhã")
+    || lowerText.includes("amanha")
+    || lowerText.includes("próxima")
+    || lowerText.includes("proxima")
+    || lowerText.includes("próximo")
+    || lowerText.includes("proximo");
+
+  if (!hasStructuredDate && !hasRelativeKeyword) {
+    const isolatedTimeMatch = lowerText.match(/(?:\bàs\b|\bas\b)?\s*(\d{1,2})(?:\s*[:h]\s*(\d{2}))?\s*(?:h|horas?)?\b/);
+    if (isolatedTimeMatch) {
+      const hour = parseInt(isolatedTimeMatch[1], 10);
+      const minute = isolatedTimeMatch[2] ? parseInt(isolatedTimeMatch[2], 10) : 0;
+
+      if (!isNaN(hour) && hour >= 0 && hour <= 23 && !isNaN(minute) && minute >= 0 && minute <= 59) {
+        targetDate = new Date(now);
+        targetDate.setHours(hour, minute, 0, 0);
+
+        if (targetDate <= now) {
+          targetDate.setDate(targetDate.getDate() + 1);
+        }
+
+        if (targetDate > now) {
+          return targetDate.toISOString();
+        }
+      }
+    }
+  }
+
   return null;
 };
 

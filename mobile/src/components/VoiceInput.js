@@ -27,6 +27,68 @@ import { syncTasks } from "../services/sync";
 import { COLORS } from "../utils/constants";
 
 /**
+ * Extrai data/hora agendada a partir do texto transcrito ou entidades do Wit.ai.
+ * 
+ * Objetivos:
+ * - Reaproveitar o datetime do Wit.ai quando disponível.
+ * - Fazer fallback para horários isolados ("10h", "10 horas") sem data explícita.
+ * - Agendar sempre para a próxima ocorrência futura com minutos padrão 00.
+ * 
+ * Fluxo interno:
+ * 1) Tenta usar `wit$datetime` das entidades.
+ * 2) Caso não exista, busca horário isolado no texto.
+ * 3) Ajusta para hoje/amanhã conforme horário atual.
+ * 
+ * @param {string} text - Texto transcrito do áudio
+ * @param {Object} entities - Entidades retornadas pelo Wit.ai
+ * @returns {string|null} Data/hora ISO 8601 ou null
+ */
+const getScheduledAtFromVoice = (text, entities = {}) => {
+  const now = new Date();
+  const rawDatetime = entities?.["wit$datetime"];
+
+  if (rawDatetime) {
+    try {
+      const parsedDate = new Date(rawDatetime);
+      if (!isNaN(parsedDate.getTime()) && parsedDate > now) {
+        return parsedDate.toISOString();
+      }
+    } catch (error) {
+      console.warn("⚠️ Erro ao processar wit$datetime:", error);
+    }
+  }
+
+  if (!text || typeof text !== "string") {
+    return null;
+  }
+
+  const lowerText = text.toLowerCase().trim();
+  const timeMatch = lowerText.match(/(?:\bàs\b|\bas\b)?\s*(\d{1,2})(?:\s*[:h]\s*(\d{2}))?\s*(?:h|horas?)?\b/);
+
+  if (!timeMatch) {
+    return null;
+  }
+
+  const hour = parseInt(timeMatch[1], 10);
+  const minute = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
+
+  if (isNaN(hour) || hour < 0 || hour > 23 || isNaN(minute) || minute < 0 || minute > 59) {
+    return null;
+  }
+
+  const scheduledDate = new Date(now);
+  scheduledDate.setHours(hour, minute, 0, 0);
+
+  if (lowerText.includes("amanhã") || lowerText.includes("amanha")) {
+    scheduledDate.setDate(scheduledDate.getDate() + 1);
+  } else if (scheduledDate <= now) {
+    scheduledDate.setDate(scheduledDate.getDate() + 1);
+  }
+
+  return scheduledDate.toISOString();
+};
+
+/**
  * Componente VoiceInput
  * 
  * @param {Function} onTaskCreated - Callback quando tarefa é criada
@@ -98,11 +160,13 @@ export default function VoiceInput({ onTaskCreated }) {
         const title = result.entities?.title || result.entities?.task_name || result.text || "Tarefa criada por voz";
         const description = result.entities?.description || null;
         const status = result.entities?.status || "pending";
+        const scheduledAt = getScheduledAtFromVoice(result.text, result.entities);
 
         await createTask({
           title: typeof title === "string" ? title : title[0],
           description: description ? (typeof description === "string" ? description : description[0]) : null,
           status: typeof status === "string" ? status : status[0],
+          scheduled_at: scheduledAt || null,
         });
 
         // Sincronizar com backend

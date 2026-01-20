@@ -8,28 +8,39 @@
 import { Platform } from "react-native";
 
 /**
- * Detecta se o app está rodando no emulador Android
- * 
- * No emulador Android, o localhost do host é acessível via 10.0.2.2
- * Em dispositivos físicos, usamos o IP local da rede
- * 
- * @returns {boolean} true se estiver rodando no emulador Android
+ * Força o modo emulador Android em desenvolvimento.
+ *
+ * Objetivo:
+ * - Evitar que o app use 10.0.2.2 em dispositivo físico (causa erro de rede).
+ * - Permitir alternar manualmente quando você estiver no emulador.
+ *
+ * Como usar:
+ * - true  => sempre usar 10.0.2.2 em dev Android (emulador).
+ * - false => usar IP local da máquina em dev Android (dispositivo físico).
+ */
+const FORCE_ANDROID_EMULATOR = false;
+
+/**
+ * Detecta se o app deve usar a rota de emulador Android.
+ *
+ * Fluxo:
+ * - Se não for Android, retorna false.
+ * - Se não for desenvolvimento, retorna false.
+ * - Usa o valor de FORCE_ANDROID_EMULATOR para decidir.
+ *
+ * @returns {boolean} true se deve usar rota de emulador Android
  */
 const isAndroidEmulator = () => {
   if (Platform.OS !== "android") {
     return false;
   }
-  
-  // Verifica se está em modo de desenvolvimento
+
+  // Somente em desenvolvimento consideramos o emulador.
   if (!__DEV__) {
     return false;
   }
-  
-  // No emulador, geralmente o modelo contém "sdk" ou "emulator"
-  // Mas a forma mais confiável é tentar detectar pelo hostname
-  // Por padrão, assumimos que se for Android em dev, pode ser emulador
-  // O usuário pode ajustar manualmente se necessário
-  return true; // Por padrão, assume emulador em dev Android
+
+  return FORCE_ANDROID_EMULATOR;
 };
 
 /**

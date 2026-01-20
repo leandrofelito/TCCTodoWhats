@@ -47,6 +47,85 @@ const normalizeEntityValue = (value, fallback = null) => {
 };
 
 /**
+ * Cria tarefa a partir da mensagem e entidades e monta a resposta.
+ * 
+ * Objetivos:
+ * - Centralizar a criação de tarefas para intents e fallback.
+ * - Garantir resposta consistente com data/hora agendada.
+ * - Enviar notificação FCM apenas quando não houver agendamento.
+ * 
+ * Fluxo interno:
+ * 1) Normaliza título/descrição/status com base nas entidades e no texto.
+ * 2) Extrai data/hora (Wit.ai ou parsing manual).
+ * 3) Persiste tarefa no banco JSON.
+ * 4) Monta mensagem de resposta.
+ * 5) Envia FCM quando aplicável.
+ * 
+ * @param {string} message - Texto bruto recebido no WhatsApp
+ * @param {Object} entities - Entidades extraídas pelo Wit.ai
+ * @returns {Promise<Object>} Resultado com tarefa criada e resposta
+ */
+const createTaskFromMessage = async (message, entities = {}) => {
+  const title = normalizeEntityValue(entities.title, null)
+    || normalizeEntityValue(entities.task_name, null)
+    || normalizeEntityValue(message, "Nova tarefa via WhatsApp");
+  const description = normalizeEntityValue(entities.description, null);
+  const rawStatus = normalizeEntityValue(entities.status, "pending");
+  const status = ["pending", "in_progress", "completed"].includes(rawStatus)
+    ? rawStatus
+    : "pending";
+
+  // Extrair data/hora agendada da mensagem
+  const scheduledAt = extractDateTime(message, entities);
+
+  // Normalizar payload da tarefa antes de persistir
+  const normalizedTask = normalizeTask({
+    title,
+    description,
+    status,
+    scheduled_at: scheduledAt,
+  });
+
+  const taskCreated = db.createTask(normalizedTask);
+
+  // Montar mensagem de resposta
+  let responseMessage = "";
+  if (scheduledAt) {
+    const scheduledDate = new Date(scheduledAt);
+    const formattedDate = scheduledDate.toLocaleString("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    responseMessage = `✅ Tarefa criada: "${taskCreated.title}"\n📅 Agendada para: ${formattedDate}`;
+  } else {
+    responseMessage = `✅ Tarefa criada: "${taskCreated.title}"`;
+  }
+
+  // Não enviar notificação FCM imediata se tiver agendamento
+  // A notificação será enviada pelo app mobile no horário agendado
+  if (!scheduledAt) {
+    try {
+      await fcmService.sendNotification({
+        title: "Nova tarefa via WhatsApp",
+        body: `Tarefa "${taskCreated.title}" foi criada`,
+        data: { taskId: taskCreated.id },
+      });
+    } catch (error) {
+      console.warn("⚠️ Erro ao enviar notificação FCM:", error);
+    }
+  }
+
+  return {
+    taskCreated,
+    responseMessage,
+    scheduledAt,
+  };
+};
+
+/**
  * POST /api/whatsapp/send
  * Envia uma mensagem via WhatsApp
  */
@@ -131,61 +210,15 @@ router.post("/webhook", async (req, res) => {
     // Processar comando baseado no intent
     let responseMessage = "";
     let taskCreated = null;
+    const shouldFallbackCreate = !intent;
 
     switch (intent) {
       case "create_task":
       case "add_task":
-        // Criar nova tarefa
-        const title = normalizeEntityValue(entities.title, null)
-          || normalizeEntityValue(entities.task_name, null)
-          || normalizeEntityValue(message, "Nova tarefa via WhatsApp");
-        const description = normalizeEntityValue(entities.description, null);
-        const rawStatus = normalizeEntityValue(entities.status, "pending");
-        const status = ["pending", "in_progress", "completed"].includes(rawStatus)
-          ? rawStatus
-          : "pending";
-        
-        // Extrair data/hora agendada da mensagem
-        const scheduledAt = extractDateTime(message, entities);
-
-        // Normalizar payload da tarefa antes de persistir
-        const normalizedTask = normalizeTask({
-          title,
-          description,
-          status,
-          scheduled_at: scheduledAt,
-        });
-
-        taskCreated = db.createTask(normalizedTask);
-
-        // Montar mensagem de resposta
-        if (scheduledAt) {
-          const scheduledDate = new Date(scheduledAt);
-          const formattedDate = scheduledDate.toLocaleString("pt-BR", {
-            day: "2-digit",
-            month: "2-digit",
-            year: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-          });
-          responseMessage = `✅ Tarefa criada: "${taskCreated.title}"\n📅 Agendada para: ${formattedDate}`;
-        } else {
-          responseMessage = `✅ Tarefa criada: "${taskCreated.title}"`;
-        }
-        
-        // Não enviar notificação FCM imediata se tiver agendamento
-        // A notificação será enviada pelo app mobile no horário agendado
-        if (!scheduledAt) {
-          try {
-            await fcmService.sendNotification({
-              title: "Nova tarefa via WhatsApp",
-              body: `Tarefa "${taskCreated.title}" foi criada`,
-              data: { taskId: taskCreated.id },
-            });
-          } catch (error) {
-            console.warn("⚠️ Erro ao enviar notificação FCM:", error);
-          }
-        }
+        // Criar nova tarefa com base no intent identificado
+        const createResult = await createTaskFromMessage(message, entities);
+        taskCreated = createResult.taskCreated;
+        responseMessage = createResult.responseMessage;
         break;
 
       case "list_tasks":
@@ -208,11 +241,18 @@ router.post("/webhook", async (req, res) => {
         break;
 
       default:
-        // Comando não reconhecido
-        responseMessage = `Olá! Eu sou o TodoWhats bot. Você pode:\n\n` +
-          `• Criar tarefa: "Criar tarefa comprar leite"\n` +
-          `• Listar tarefas: "Mostrar minhas tarefas"\n\n` +
-          `Sua mensagem: "${message}"`;
+        if (shouldFallbackCreate) {
+          // Fallback: criar tarefa mesmo sem intent reconhecido
+          const fallbackResult = await createTaskFromMessage(message, entities);
+          taskCreated = fallbackResult.taskCreated;
+          responseMessage = fallbackResult.responseMessage;
+        } else {
+          // Comando não reconhecido quando existe intent não suportado
+          responseMessage = `Olá! Eu sou o TodoWhats bot. Você pode:\n\n` +
+            `• Criar tarefa: "Criar tarefa comprar leite"\n` +
+            `• Listar tarefas: "Mostrar minhas tarefas"\n\n` +
+            `Sua mensagem: "${message}"`;
+        }
     }
 
     // Enviar resposta via WhatsApp

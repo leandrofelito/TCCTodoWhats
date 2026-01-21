@@ -10,8 +10,10 @@
 
 const express = require("express");
 const router = express.Router();
+const axios = require("axios");
 const whatsappService = require("../services/whatsapp");
 const witService = require("../services/wit");
+const whisperService = require("../services/whisper");
 const db = require("../config/database");
 const fcmService = require("../services/fcm");
 const { extractDateTime } = require("../utils/dateParser");
@@ -178,9 +180,9 @@ router.post("/webhook", async (req, res) => {
   try {
     // Processar mensagem recebida
     const messageData = whatsappService.processReceivedMessage(req.body);
-    const { phone, message, ignored, reason } = messageData;
+    const { phone, message, ignored, reason, media } = messageData;
 
-    if (ignored || !phone || !message) {
+    if (ignored || !phone || (!message && !media?.isAudio)) {
       // Ignorar eventos de ack ou payloads sem campos minimos
       console.log(
         `⚠️ Webhook ignorado: phone=${phone} message=${message} reason=${reason || "missing_fields"}`
@@ -192,19 +194,151 @@ router.post("/webhook", async (req, res) => {
       });
     }
 
-    console.log(`📱 Mensagem recebida de ${phone}: ${message}`);
+    console.log(`📱 Mensagem recebida de ${phone}: ${message || "[audio]"}`);
 
     // Interpretar mensagem usando Wit.ai
     let intent = null;
     let entities = {};
+    let finalMessage = message;
 
-    try {
-      const witResult = await witService.interpretText(message);
-      intent = witResult.intent;
-      entities = witResult.entities || {};
-    } catch (error) {
-      console.warn("⚠️ Erro ao interpretar com Wit.ai:", error);
-      // Continuar mesmo se Wit.ai falhar
+    /**
+     * Tratamento de áudio (WhatsApp -> Ultramsg -> Backend).
+     * 
+     * Objetivos:
+     * - Baixar o áudio quando o payload indica mídia.
+     * - Transcrever localmente via Whisper (gratuito).
+     * - Manter o Wit.ai apenas para interpretar o texto transcrito.
+     * - Não quebrar o fluxo de mensagens de texto já existente.
+     */
+    if (!finalMessage && media?.isAudio) {
+      try {
+        if (!media.url) {
+          throw new Error("URL do áudio não encontrada no payload");
+        }
+
+        /**
+         * Baixar áudio com timeout e validação básica.
+         * 
+         * Objetivos:
+         * - Evitar travar o webhook em downloads lentos.
+         * - Garantir que o conteúdo retornado é binário de áudio.
+         */
+        const audioResponse = await axios.get(media.url, {
+          responseType: "arraybuffer",
+          timeout: 15000,
+          validateStatus: (status) => status >= 200 && status < 300,
+        });
+
+        const audioBuffer = Buffer.from(audioResponse.data || []);
+        const responseContentType = audioResponse.headers?.["content-type"] || null;
+
+        if (!audioBuffer.length) {
+          throw new Error("Download do áudio retornou vazio");
+        }
+
+        if (typeof responseContentType === "string" && responseContentType.startsWith("text/")) {
+          throw new Error("Download do áudio retornou conteúdo não binário");
+        }
+        /**
+         * Resolver content-type do áudio.
+         * 
+         * Objetivos:
+         * - Evitar erro do Wit.ai quando o header não vem no download.
+         * - Usar heurística simples baseada no tipo de mídia.
+         * - Manter um fallback seguro para áudio do WhatsApp.
+         */
+        let resolvedContentType =
+          media.mimeType ||
+          responseContentType ||
+          null;
+
+        // Normalizar content-type para remover parâmetros (ex.: codecs)
+        if (typeof resolvedContentType === "string") {
+          resolvedContentType = resolvedContentType.split(";")[0].trim();
+        }
+
+        if (!resolvedContentType) {
+          if (String(media?.type || "").includes("ptt")) {
+            resolvedContentType = "audio/ogg";
+          } else if (String(media?.type || "").includes("audio")) {
+            resolvedContentType = "audio/mpeg";
+          } else {
+            resolvedContentType = "audio/ogg";
+          }
+        }
+
+        console.log("🎧 Áudio baixado:", {
+          contentType: resolvedContentType,
+          bytes: audioBuffer.length,
+        });
+
+        /**
+         * Transcrever o áudio localmente.
+         * 
+         * Objetivos:
+         * - Evitar chamadas externas para transcrição.
+         * - Garantir funcionamento gratuito para o TCC.
+         * - Retornar texto para o fluxo atual de intents.
+         */
+        finalMessage = await whisperService.transcribeAudioBuffer(audioBuffer, resolvedContentType);
+
+        console.log("📝 Transcrição:", finalMessage || "[vazia]");
+
+        intent = null;
+        entities = {};
+      } catch (error) {
+        console.warn("⚠️ Erro ao transcrever áudio:", error.message || error);
+        if (String(error?.message || "").includes("URL do áudio não encontrada")) {
+          console.warn(
+            "⚠️ Dica: habilite o webhook_message_download_media no Ultramsg para receber a URL do arquivo."
+          );
+        }
+
+        const errorResponse = "❌ Não consegui transcrever o áudio. Tente novamente ou envie o texto.";
+
+        try {
+          await whatsappService.sendWhatsAppMessage(phone, errorResponse);
+        } catch (sendError) {
+          console.error("❌ Erro ao enviar resposta de falha:", sendError);
+        }
+
+        return res.json({
+          success: true,
+          message: "Webhook processado com erro de transcrição",
+          intent: null,
+          taskCreated: null,
+          reason: "audio_transcription_error",
+        });
+      }
+    }
+
+    if (!finalMessage) {
+      const fallbackResponse = "Não consegui entender o áudio. Pode enviar novamente ou digitar o texto?";
+
+      try {
+        await whatsappService.sendWhatsAppMessage(phone, fallbackResponse);
+      } catch (error) {
+        console.error("❌ Erro ao enviar resposta:", error);
+      }
+
+      return res.json({
+        success: true,
+        message: "Webhook processado com aviso",
+        intent: null,
+        taskCreated: null,
+        reason: "empty_transcription",
+      });
+    }
+
+    if (!intent) {
+      try {
+        const witResult = await witService.interpretText(finalMessage);
+        intent = witResult.intent;
+        entities = witResult.entities || {};
+      } catch (error) {
+        console.warn("⚠️ Erro ao interpretar com Wit.ai:", error);
+        // Continuar mesmo se Wit.ai falhar
+      }
     }
 
     // Processar comando baseado no intent
@@ -216,7 +350,7 @@ router.post("/webhook", async (req, res) => {
       case "create_task":
       case "add_task":
         // Criar nova tarefa com base no intent identificado
-        const createResult = await createTaskFromMessage(message, entities);
+        const createResult = await createTaskFromMessage(finalMessage, entities);
         taskCreated = createResult.taskCreated;
         responseMessage = createResult.responseMessage;
         break;
@@ -243,7 +377,7 @@ router.post("/webhook", async (req, res) => {
       default:
         if (shouldFallbackCreate) {
           // Fallback: criar tarefa mesmo sem intent reconhecido
-          const fallbackResult = await createTaskFromMessage(message, entities);
+          const fallbackResult = await createTaskFromMessage(finalMessage, entities);
           taskCreated = fallbackResult.taskCreated;
           responseMessage = fallbackResult.responseMessage;
         } else {
@@ -251,7 +385,7 @@ router.post("/webhook", async (req, res) => {
           responseMessage = `Olá! Eu sou o TodoWhats bot. Você pode:\n\n` +
             `• Criar tarefa: "Criar tarefa comprar leite"\n` +
             `• Listar tarefas: "Mostrar minhas tarefas"\n\n` +
-            `Sua mensagem: "${message}"`;
+            `Sua mensagem: "${finalMessage}"`;
         }
     }
 

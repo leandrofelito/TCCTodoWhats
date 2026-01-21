@@ -195,8 +195,153 @@ const sendWhatsAppMessage = async (phone, message) => {
 };
 
 /**
+ * Extrai dados de mídia do payload de webhook.
+ * 
+ * Objetivos:
+ * - Identificar mensagens de áudio (ptt/voice/audio).
+ * - Capturar URL do arquivo quando presente.
+ * - Registrar mime type quando disponível.
+ * 
+ * Fluxo interno:
+ * 1) Coletar possíveis campos de tipo de mídia.
+ * 2) Coletar possíveis campos de URL.
+ * 3) Normalizar para um objeto único.
+ * 
+ * @param {Object} messageData - Payload bruto do webhook
+ * @returns {Object} Informações normalizadas de mídia
+ */
+const extractMediaInfo = (messageData) => {
+  const data = messageData?.data || messageData?.payload || {};
+  const messageRoot = data?.message || messageData?.message || messageData?.messages?.[0] || {};
+
+  const typeCandidates = [
+    data.type,
+    data?.message?.type,
+    messageRoot.type,
+    data?.media?.type,
+    data?.mimetype,
+    data?.media?.mimetype,
+    data?.message?.mimetype,
+    messageRoot?.mimetype,
+  ];
+
+  let mediaType = null;
+  for (const candidate of typeCandidates) {
+    const normalized = normalizeTextValue(candidate);
+    if (normalized) {
+      mediaType = normalized.toLowerCase();
+      break;
+    }
+  }
+
+  /**
+   * Normaliza possíveis campos de mídia (object ou JSON string).
+   * 
+   * Objetivo:
+   * - Capturar URL quando o provedor envia detalhes estruturados.
+   */
+  const normalizeMediaPayload = (payload) => {
+    if (!payload) {
+      return null;
+    }
+
+    if (typeof payload === "string") {
+      const trimmed = payload.trim();
+      if (!trimmed) {
+        return null;
+      }
+
+      if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+        try {
+          return JSON.parse(trimmed);
+        } catch (error) {
+          return trimmed;
+        }
+      }
+
+      return trimmed;
+    }
+
+    if (typeof payload === "object") {
+      return payload;
+    }
+
+    return null;
+  };
+
+  const normalizedMedia = normalizeMediaPayload(data?.media);
+
+  const urlCandidates = [
+    data.body,
+    data.url,
+    data.media,
+    data.mediaUrl,
+    data.file,
+    data.link,
+    data?.message?.url,
+    data?.message?.media,
+    data?.message?.body,
+    messageRoot?.audio?.url,
+    messageRoot?.audio?.link,
+    messageRoot?.url,
+    messageRoot?.body,
+    normalizedMedia?.url,
+    normalizedMedia?.link,
+    normalizedMedia?.file,
+    normalizedMedia?.path,
+    normalizedMedia?.mediaUrl,
+  ];
+
+  let mediaUrl = null;
+  for (const candidate of urlCandidates) {
+    const normalized = normalizeTextValue(candidate);
+    if (normalized && /^https?:\/\//i.test(normalized)) {
+      mediaUrl = normalized;
+      break;
+    }
+  }
+
+  const mimeCandidates = [
+    data?.mimeType,
+    data?.mimetype,
+    data?.media?.mimetype,
+    data?.message?.mimetype,
+    messageRoot?.mimetype,
+    messageRoot?.audio?.mimetype,
+    normalizedMedia?.mimetype,
+    normalizedMedia?.mimeType,
+  ];
+
+  let mimeType = null;
+  for (const candidate of mimeCandidates) {
+    const normalized = normalizeTextValue(candidate);
+    if (normalized) {
+      mimeType = normalized.toLowerCase();
+      break;
+    }
+  }
+
+  const isAudio = Boolean(
+    mediaType && (mediaType.includes("audio") || mediaType.includes("ptt"))
+    || (mimeType && mimeType.startsWith("audio/"))
+  );
+
+  return {
+    type: mediaType,
+    url: mediaUrl,
+    mimeType,
+    isAudio,
+  };
+};
+
+/**
  * Processa mensagem recebida do WhatsApp
  * Extrai comando e dados da mensagem
+ * 
+ * Objetivos:
+ * - Normalizar dados de texto, telefone e mídia.
+ * - Ignorar eventos que não são mensagens recebidas.
+ * - Entregar contexto suficiente para tratar áudio no webhook.
  * 
  * @param {Object} messageData - Dados da mensagem recebida
  * @returns {Object} Dados processados
@@ -277,9 +422,12 @@ const processReceivedMessage = (messageData) => {
     messageData?.messages?.[0]?.timestamp ||
     null;
 
+  const media = extractMediaInfo(messageData);
+
   return {
     phone: phoneRaw,
     message: messageRaw,
+    media,
     timestamp: timestampRaw
       ? new Date(
           typeof timestampRaw === "number" ? timestampRaw * 1000 : timestampRaw

@@ -134,8 +134,7 @@ export const cleanupOrphanTasks = async () => {
 export const cleanupSpecificProblemTasks = async () => {
   // Títulos exatos das tarefas problemáticas (conforme mostrado na interface)
   const problemTitles = [
-    "Teste 2",
-    "Teste",
+    // Ajuste: limpeza automática desativada para não apagar tarefas válidas.
   ];
   
   console.log("🧹 Iniciando limpeza FORÇADA de tarefas problemáticas...");

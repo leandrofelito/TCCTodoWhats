@@ -42,6 +42,7 @@ export default function HomeScreen({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const isLoadingRef = useRef(false);
+  const hasPendingReloadRef = useRef(false);
 
   /**
    * Carrega tarefas do banco de dados local
@@ -58,10 +59,14 @@ export default function HomeScreen({ navigation }) {
     // Isso reduz loop de atualização e garante que o banco seja lido apenas uma vez por ciclo.
     if (isLoadingRef.current) {
       console.log("⏳ loadTasks ignorado: já existe carregamento em andamento.");
+      // Marca que existe uma recarga pendente para rodar assim que o carregamento atual terminar.
+      hasPendingReloadRef.current = true;
       return;
     }
 
     isLoadingRef.current = true;
+    // Como vamos iniciar um carregamento real, limpamos a pendência atual.
+    hasPendingReloadRef.current = false;
 
     // #region agent log
     fetch('http://127.0.0.1:7242/ingest/900d3e87-1857-467b-b71f-e58429934408',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'Home.js:53',message:'loadTasks ENTRY',data:{timestamp:Date.now()},timestamp:Date.now(),sessionId:'debug-session',runId:'run1',hypothesisId:'D'})}).catch(()=>{});
@@ -112,6 +117,10 @@ export default function HomeScreen({ navigation }) {
       setLoading(false);
       // Libera o lock do carregamento para permitir novos ciclos.
       isLoadingRef.current = false;
+      // Se uma nova recarga foi solicitada enquanto carregávamos, executa agora.
+      if (hasPendingReloadRef.current) {
+        loadTasks();
+      }
     }
   };
 

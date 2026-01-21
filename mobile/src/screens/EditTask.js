@@ -23,6 +23,8 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  Switch,
+  Modal,
 } from "react-native";
 import { getTaskById, updateTask, deleteTask } from "../database/tasks";
 import { syncTasks } from "../services/sync";
@@ -38,13 +40,159 @@ export default function EditTaskScreen({ route, navigation }) {
   const [status, setStatus] = useState(TASK_STATUS.PENDING);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [enableScheduling, setEnableScheduling] = useState(false);
+  const [scheduledAt, setScheduledAt] = useState(new Date());
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [dateInput, setDateInput] = useState("");
+  const [timeInput, setTimeInput] = useState("");
 
   /**
    * Carrega dados da tarefa
+   * Objetivo: preencher os campos da tela e preparar o agendamento existente.
    */
   useEffect(() => {
     loadTask();
   }, [taskId]);
+
+  /**
+   * Formata o input de data enquanto o usuário digita (DD/MM/YYYY)
+   * Objetivo: evitar entrada inválida e facilitar a digitação.
+   * @param {string} text - Texto digitado pelo usuário
+   * @returns {string} Texto formatado com barras
+   */
+  const formatDateInput = (text) => {
+    const numbers = text.replace(/\D/g, "");
+    const limited = numbers.slice(0, 8);
+
+    if (limited.length <= 2) {
+      return limited;
+    } else if (limited.length <= 4) {
+      return `${limited.slice(0, 2)}/${limited.slice(2)}`;
+    }
+    return `${limited.slice(0, 2)}/${limited.slice(2, 4)}/${limited.slice(4)}`;
+  };
+
+  /**
+   * Formata o input de hora enquanto o usuário digita (HH:MM)
+   * Objetivo: manter padrão de hora e evitar caracteres inválidos.
+   * @param {string} text - Texto digitado pelo usuário
+   * @returns {string} Texto formatado com dois pontos
+   */
+  const formatTimeInput = (text) => {
+    const numbers = text.replace(/\D/g, "");
+    const limited = numbers.slice(0, 4);
+
+    if (limited.length <= 2) {
+      return limited;
+    }
+    return `${limited.slice(0, 2)}:${limited.slice(2)}`;
+  };
+
+  /**
+   * Handler para mudança de input de data
+   * Objetivo: atualizar o estado com a data formatada.
+   * @param {string} text - Texto digitado no campo
+   */
+  const handleDateInputChange = (text) => {
+    const formatted = formatDateInput(text);
+    setDateInput(formatted);
+  };
+
+  /**
+   * Handler para mudança de input de hora
+   * Objetivo: atualizar o estado com a hora formatada.
+   * @param {string} text - Texto digitado no campo
+   */
+  const handleTimeInputChange = (text) => {
+    const formatted = formatTimeInput(text);
+    setTimeInput(formatted);
+  };
+
+  /**
+   * Handler para confirmar data/hora do agendamento
+   * Objetivo: validar e salvar a nova data/hora no estado.
+   */
+  const handleConfirmDateTime = () => {
+    if (!dateInput || !timeInput) {
+      Alert.alert("Erro", "Por favor, preencha data e hora.");
+      return;
+    }
+
+    const [day, month, year] = dateInput.split("/");
+    const [hour, minute] = timeInput.split(":");
+
+    if (!day || !month || !year || !hour || !minute) {
+      Alert.alert("Erro", "Formato inválido. Use DD/MM/YYYY para data e HH:MM para hora.");
+      return;
+    }
+
+    const newDate = new Date(
+      parseInt(year, 10),
+      parseInt(month, 10) - 1,
+      parseInt(day, 10),
+      parseInt(hour, 10),
+      parseInt(minute, 10),
+      0,
+      0
+    );
+
+    if (isNaN(newDate.getTime())) {
+      Alert.alert("Erro", "Data/hora inválida.");
+      return;
+    }
+
+    const now = new Date();
+    const nextMinute = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      now.getHours(),
+      now.getMinutes() + 1,
+      0,
+      0
+    );
+
+    if (newDate <= nextMinute) {
+      const nowFormatted = now.toLocaleString("pt-BR", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      const newDateFormatted = newDate.toLocaleString("pt-BR", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      Alert.alert(
+        "Erro",
+        `A data/hora deve ser no futuro (pelo menos 1 minuto a partir de agora).\n\nAgora: ${nowFormatted}\nTentado: ${newDateFormatted}`
+      );
+      return;
+    }
+
+    setScheduledAt(newDate);
+    setShowDatePicker(false);
+  };
+
+  /**
+   * Formata data/hora para exibição
+   * Objetivo: manter padrão pt-BR no campo de agendamento.
+   * @param {Date} date - Data a ser formatada
+   * @returns {string} Data/hora no formato legível
+   */
+  const formatDateTime = (date) => {
+    return date.toLocaleString("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
 
   const loadTask = async () => {
     try {
@@ -54,6 +202,24 @@ export default function EditTaskScreen({ route, navigation }) {
         setTitle(task.title || "");
         setDescription(task.description || "");
         setStatus(task.status || TASK_STATUS.PENDING);
+        if (task.scheduled_at) {
+          const parsedDate = new Date(task.scheduled_at);
+          if (!isNaN(parsedDate.getTime())) {
+            setEnableScheduling(true);
+            setScheduledAt(parsedDate);
+            const day = String(parsedDate.getDate()).padStart(2, "0");
+            const month = String(parsedDate.getMonth() + 1).padStart(2, "0");
+            const year = parsedDate.getFullYear();
+            const hour = String(parsedDate.getHours()).padStart(2, "0");
+            const minute = String(parsedDate.getMinutes()).padStart(2, "0");
+            setDateInput(`${day}/${month}/${year}`);
+            setTimeInput(`${hour}:${minute}`);
+          } else {
+            setEnableScheduling(false);
+          }
+        } else {
+          setEnableScheduling(false);
+        }
       } else {
         Alert.alert("Erro", "Tarefa não encontrada.", [
           { text: "OK", onPress: () => navigation.goBack() },
@@ -69,12 +235,43 @@ export default function EditTaskScreen({ route, navigation }) {
 
   /**
    * Handler para salvar alterações
+   * Objetivo: validar dados, atualizar tarefa local e sincronizar.
    */
   const handleSave = async () => {
     // Validação
     if (!title.trim()) {
       Alert.alert("Erro", "Por favor, informe o título da tarefa.");
       return;
+    }
+
+    // Validar data agendada se habilitada
+    if (enableScheduling) {
+      const now = new Date();
+      const nowNormalized = new Date(
+        now.getFullYear(),
+        now.getMonth(),
+        now.getDate(),
+        now.getHours(),
+        now.getMinutes(),
+        0,
+        0
+      );
+      const scheduledNormalized = new Date(
+        scheduledAt.getFullYear(),
+        scheduledAt.getMonth(),
+        scheduledAt.getDate(),
+        scheduledAt.getHours(),
+        scheduledAt.getMinutes(),
+        0,
+        0
+      );
+      const nextMinute = new Date(nowNormalized);
+      nextMinute.setMinutes(nextMinute.getMinutes() + 1);
+
+      if (scheduledNormalized < nextMinute) {
+        Alert.alert("Erro", "A data/hora agendada deve ser no futuro (pelo menos 1 minuto a partir de agora).");
+        return;
+      }
     }
 
     setSaving(true);
@@ -84,6 +281,7 @@ export default function EditTaskScreen({ route, navigation }) {
         title: title.trim(),
         description: description.trim() || null,
         status,
+        scheduled_at: enableScheduling ? scheduledAt.toISOString() : null,
       });
 
       // Tentar sincronizar com backend (não bloquear se falhar)
@@ -239,6 +437,95 @@ export default function EditTaskScreen({ route, navigation }) {
           </View>
         </View>
 
+        {/* Campo Agendamento */}
+        <View style={styles.field}>
+          <View style={styles.scheduleHeader}>
+            <Text style={styles.label}>Agendar Notificação</Text>
+            <Switch
+              value={enableScheduling}
+              onValueChange={setEnableScheduling}
+              trackColor={{ false: COLORS.BORDER, true: COLORS.PRIMARY }}
+              thumbColor="#fff"
+            />
+          </View>
+          {enableScheduling && (
+            <View style={styles.scheduleContainer}>
+              <TouchableOpacity
+                style={styles.dateTimeButton}
+                onPress={() => {
+                  const baseDate = scheduledAt instanceof Date ? scheduledAt : new Date();
+                  const day = String(baseDate.getDate()).padStart(2, "0");
+                  const month = String(baseDate.getMonth() + 1).padStart(2, "0");
+                  const year = baseDate.getFullYear();
+                  const hour = String(baseDate.getHours()).padStart(2, "0");
+                  const minute = String(baseDate.getMinutes()).padStart(2, "0");
+                  setDateInput(`${day}/${month}/${year}`);
+                  setTimeInput(`${hour}:${minute}`);
+                  setShowDatePicker(true);
+                }}
+              >
+                <Text style={styles.dateTimeText}>
+                  {formatDateTime(scheduledAt)}
+                </Text>
+              </TouchableOpacity>
+
+              <Modal
+                visible={showDatePicker}
+                transparent={true}
+                animationType="slide"
+                onRequestClose={() => setShowDatePicker(false)}
+              >
+                <View style={styles.modalOverlay}>
+                  <View style={styles.modalContent}>
+                    <Text style={styles.modalTitle}>Agendar Data e Hora</Text>
+
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Data (DD/MM/YYYY)</Text>
+                      <TextInput
+                        style={styles.modalInput}
+                        placeholder="DD/MM/YYYY"
+                        value={dateInput}
+                        onChangeText={handleDateInputChange}
+                        keyboardType="numeric"
+                        maxLength={10}
+                      />
+                    </View>
+
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.inputLabel}>Hora (HH:MM)</Text>
+                      <TextInput
+                        style={styles.modalInput}
+                        placeholder="HH:MM"
+                        value={timeInput}
+                        onChangeText={handleTimeInputChange}
+                        keyboardType="numeric"
+                        maxLength={5}
+                      />
+                    </View>
+
+                    <View style={styles.modalButtons}>
+                      <TouchableOpacity
+                        style={[styles.modalButton, styles.modalButtonCancel]}
+                        onPress={() => setShowDatePicker(false)}
+                      >
+                        <Text style={styles.modalButtonText}>Cancelar</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.modalButton, styles.modalButtonConfirm]}
+                        onPress={handleConfirmDateTime}
+                      >
+                        <Text style={[styles.modalButtonText, styles.modalButtonTextConfirm]}>
+                          Confirmar
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+              </Modal>
+            </View>
+          )}
+        </View>
+
         {/* Botão Salvar */}
         <TouchableOpacity
           style={[styles.saveButton, saving && styles.saveButtonDisabled]}
@@ -301,6 +588,90 @@ const styles = StyleSheet.create({
   statusContainer: {
     flexDirection: "row",
     gap: 8,
+  },
+  scheduleHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  scheduleContainer: {
+    marginTop: 8,
+  },
+  dateTimeButton: {
+    backgroundColor: "#fff",
+    borderRadius: 8,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: COLORS.BORDER,
+    alignItems: "center",
+  },
+  dateTimeText: {
+    fontSize: 16,
+    color: COLORS.TEXT,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  modalContent: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 20,
+    width: "90%",
+    maxWidth: 400,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    marginBottom: 20,
+    color: COLORS.TEXT,
+  },
+  inputGroup: {
+    marginBottom: 16,
+  },
+  inputLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: COLORS.TEXT,
+    marginBottom: 8,
+  },
+  modalInput: {
+    backgroundColor: "#f5f5f5",
+    borderRadius: 8,
+    padding: 12,
+    fontSize: 16,
+    borderWidth: 1,
+    borderColor: COLORS.BORDER,
+  },
+  modalButtons: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    marginTop: 20,
+    gap: 12,
+  },
+  modalButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 8,
+    minWidth: 100,
+    alignItems: "center",
+  },
+  modalButtonCancel: {
+    backgroundColor: "#f5f5f5",
+  },
+  modalButtonConfirm: {
+    backgroundColor: COLORS.PRIMARY,
+  },
+  modalButtonText: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: COLORS.TEXT,
+  },
+  modalButtonTextConfirm: {
+    color: "#fff",
   },
   statusButton: {
     flex: 1,

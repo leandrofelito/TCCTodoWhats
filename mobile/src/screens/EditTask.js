@@ -682,6 +682,8 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: COLORS.BORDER,
     alignItems: "center",
+    // Centraliza o conteúdo para manter o texto alinhado no "quadradinho".
+    justifyContent: "center",
   },
   statusButtonActive: {
     borderColor: COLORS.PRIMARY,
@@ -691,6 +693,8 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.TEXT,
     fontWeight: "500",
+    // Garante centralização do texto quando quebra linha.
+    textAlign: "center",
   },
   statusTextActive: {
     color: "#fff",

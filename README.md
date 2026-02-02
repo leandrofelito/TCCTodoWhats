@@ -666,11 +666,6 @@ Este projeto foi desenvolvido como **MVP (Minimum Viable Product)** para fins ac
 O projeto inclui documentação detalhada em português:
 
 - 📖 [Guia de Instalação Detalhado](INSTALACAO.md)
-- 🎓 [Guia de Apresentação para TCC](APRESENTACAO_TCC.md)
-- 📊 [Diagrama de Blocos do Sistema](DIAGRAMA_BLOCOS_SISTEMA.md)
-- 🔄 [Guia de Teste WhatsApp Sync](GUIA_TESTE_WHATSAPP_SYNC.md)
-- 📱 [Como Executar no Expo Go](EXECUTAR_EXPO_GO.md)
-- 🏗️ [Diagramas de Arquitetura](diagramas/README.md)
 
 ---
 
@@ -686,7 +681,7 @@ O código é fornecido "como está", sem garantias. Sinta-se livre para usar com
 
 ### Autor
 
-**Desenvolvedor** - Projeto desenvolvido como TCC em Engenharia de Software
+**Leandro Felito** - Projeto desenvolvido como TCC em Engenharia de Software
 
 ### Agradecimentos
 

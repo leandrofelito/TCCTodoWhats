@@ -56,7 +56,7 @@ export const initFCM = async () => {
 
     // Obter token FCM
     const tokenData = await Notifications.getExpoPushTokenAsync({
-      projectId: "1b35cd68-4bf4-4f44-b1d6-6d5098af43b7",
+      projectId: "INSIRA_ID_DO_PROJETO",
     });
 
     const token = tokenData.data;

@@ -63,7 +63,7 @@ const buildPythonEnv = () => {
   const currentPath = String(env.Path || env.PATH || "");
 
   // Caminho padrão do ffmpeg instalado via winget (Gyan.FFmpeg).
-  const wingetFfmpegBin = "C:\\Users\\Leandro\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.0.1-full_build\\bin";
+  const wingetFfmpegBin = "CAMINHO DO ffmpeg-8.0.1-full_build\\bin";
 
   if (fs.existsSync(path.join(wingetFfmpegBin, "ffmpeg.exe"))) {
     if (!currentPath.toLowerCase().includes(wingetFfmpegBin.toLowerCase())) {
